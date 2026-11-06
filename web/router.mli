@@ -20,5 +20,5 @@ type result =
   | Not_found of string list
       (** Methods allowed on matching paths, sorted; empty for a 404. *)
 
-val create : Route.route list -> t
+val create : unit Route.route list -> t
 val lookup : t -> Request.t -> result

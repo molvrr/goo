@@ -69,6 +69,11 @@ val ( / ) :
 
 val ( /? ) : (('a, 'r) path -> ('b, 'r) path) -> ('a, 'r) path -> ('b, 'r) path
 
+val ( // ) : ('a, 'b) path -> ('b, 'c) path -> ('a, 'c) path
+(** [a // b]: [a]'s segments, then [b]'s, captures in that order; [a]'s
+    end ([nil]) just joins them. For printing the URL of a route in a
+    {!scope}: [url (org () // members ()) 7]. Parenthesize each side. *)
+
 (** {1 Query parameters} *)
 
 module Q : sig
@@ -96,24 +101,36 @@ val ( /& ) : ('f, 'a -> 'r) path -> 'a Q.t -> ('f, 'r) path
 
 (** {1 Routes} *)
 
-type 'r endpoint
-(** A path bound to a handler producing ['r]. *)
+type ('ctx, 'r) endpoint
+(** A path bound to a handler producing ['r], in a scope whose routes get
+    a ['ctx]. *)
 
-type route
+type 'ctx route
+(** A route whose handler is given a ['ctx] by the {!scope} it is in.
+    Routes given to {!App} are [unit route]s: outside any scope, or in
+    scopes nested in a [unit] one. *)
 
-val ( @-> ) : ('f, 'r) path -> (Request.t -> 'f) -> 'r endpoint
-val get : Response.t endpoint -> route
-val post : Response.t endpoint -> route
-val put : Response.t endpoint -> route
-val patch : Response.t endpoint -> route
-val delete : Response.t endpoint -> route
-val any : Response.t endpoint -> route
+val ( @-> ) : ('f, 'r) path -> (Request.t -> 'f) -> ('ctx, 'r) endpoint
+(** A handler that doesn't use the scope's context. *)
+
+val ( @=> ) : ('f, 'r) path -> (Request.t -> 'ctx -> 'f) -> ('ctx, 'r) endpoint
+(** A handler given the scope's context, before the captures:
+    [get (s "members" /? nil @=> fun _req org -> ...)]. *)
+
+val get : ('ctx, Response.t) endpoint -> 'ctx route
+(** Also answers HEAD, without the body. *)
+
+val post : ('ctx, Response.t) endpoint -> 'ctx route
+val put : ('ctx, Response.t) endpoint -> 'ctx route
+val patch : ('ctx, Response.t) endpoint -> 'ctx route
+val delete : ('ctx, Response.t) endpoint -> 'ctx route
+val any : ('ctx, Response.t) endpoint -> 'ctx route
 (** Any method. *)
 
-val meth : Httpun.Method.t -> Response.t endpoint -> route
+val meth : Httpun.Method.t -> ('ctx, Response.t) endpoint -> 'ctx route
 
 val ws :
-  ?headers:(string * string) list -> ?max_message:int -> (Websocket.t -> unit) endpoint -> route
+  ?headers:(string * string) list -> ?max_message:int -> ('ctx, Websocket.t -> unit) endpoint -> 'ctx route
 (** A WebSocket route: the handler takes the socket after the captures and
     query parameters, and its body is the session.
     {[
@@ -123,6 +140,47 @@ val ws :
     upgrade, which try it before other routes on the same path. So a [get]
     route on that path can serve the page: a plain request falls through to
     it, and if nothing else matches the answer is 426 Upgrade Required. *)
+
+(** {1 Scopes} *)
+
+type middleware = (Request.t -> Response.t) -> Request.t -> Response.t
+(** The same as {!App.middleware}. *)
+
+val scope :
+  ?middleware:middleware list ->
+  ('f, ('ctx, Response.t) result) path ->
+  (Request.t -> 'outer -> 'f) ->
+  'ctx route list ->
+  'outer route list
+(** [scope prefix build routes] mounts [routes] under [prefix], a path
+    ending with [nil] whose captures go to [build] (with the request and the
+    enclosing scope's context, [()] at the top). [build] returns the context
+    for [routes], or a response to send instead (e.g. a 404 when the
+    captured id doesn't exist):
+    {[
+      scope ~middleware:[ require_login ] (s "orgs" / int /? nil)
+        (fun _req () id -> match Org.find id with
+           | Some org -> Ok org
+           | None -> Error (Response.text ~status:`Not_found "no such org"))
+        [ get (s "members" /? nil @=> fun _req org -> ...);
+          delete (s "members" / int /? nil @=> fun _req org member -> ...) ]
+    ]}
+
+    [middleware] runs only when one of [routes] matched (never for a 404 or
+    405), outermost first and around [build]: so it can refuse the request
+    before anything is loaded. Middleware may pass a different request on
+    to [build] and the handler; captures and query parameters were already
+    decoded from the original one. Scopes nest: an inner scope's [build] gets
+    the outer one's context. Query parameters in [prefix] are decoded like
+    a route's. *)
+
+val group :
+  ?middleware:middleware list ->
+  (('ctx, Response.t) result, ('ctx, Response.t) result) path ->
+  'ctx route list ->
+  'ctx route list
+(** A {!scope} with no captures, passing the context through:
+    [group ~middleware:[ admin_only ] (s "admin" /? nil) [ ... ]]. *)
 
 (** {1 Reverse routing} *)
 
@@ -142,7 +200,7 @@ val url : ('f, string) path -> 'f
 val pattern : ('f, 'r) path -> string
 (** For logs: ["/users/:int/delete?page=<int>"]. *)
 
-val route_pattern : route -> string
+val route_pattern : 'ctx route -> string
 
 (**/**)
 
@@ -153,11 +211,11 @@ type outcome =
   | Bad_query of string
   | No_match
 
-val matches : route -> Request.t -> outcome
+val matches : unit route -> Request.t -> outcome
 
 type key = Key_lit of string | Key_cap of { id : int; accepts : string -> bool }
 type ending = End_exact of bool  (** accepts a trailing slash *) | End_rest
 
-val keys : route -> key list * ending
-val is_ws : route -> bool
+val keys : 'ctx route -> key list * ending
+val is_ws : 'ctx route -> bool
 val wants_upgrade : Request.t -> bool

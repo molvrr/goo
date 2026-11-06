@@ -5,7 +5,7 @@ module Log = (val Logs.src_log src : Logs.LOG)
 type handler = Request.t -> Response.t
 type middleware = handler -> handler
 type t = {
-  routes : Route.route list;
+  routes : unit Route.route list;
   router : Router.t Lazy.t;  (* rebuilt when routes change *)
   middleware : middleware list;
   not_found : handler;

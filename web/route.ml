@@ -98,6 +98,7 @@ type ('f, 'r) path =
   | Cap : 'a conv * ('f, 'r) path -> ('a -> 'f, 'r) path
   | Query : ('f, 'a -> 'r) path * 'a Q.t -> ('f, 'r) path
   | Rest : (string list -> 'r, 'r) path  (* every remaining segment *)
+  | Concat : ('a, 'b) path * ('b, 'c) path -> ('a, 'c) path  (* [a]'s segments, then [b]'s *)
 
 let s lit rest = Lit (lit, rest)
 let custom c rest = Cap (c, rest)
@@ -110,55 +111,82 @@ let rest = Rest
 let ( / ) a b rest = a (b rest)
 let ( /? ) a terminator = a terminator
 let ( /& ) p q = Query (p, q)
+let ( // ) a b = Concat (a, b)
 
 (* Matching builds the application of the handler without running it, so
-   the handler only runs once the whole path and query have matched. *)
-type 'k m = M_ok of 'k | M_bad of string | M_none
+   the handler only runs once the whole path and query have matched. It
+   returns the segments left over: the end of a path that is followed by
+   more ([final = false]: a scope's prefix, the left of [//]) leaves them to
+   what comes next; a final end must have consumed them all. *)
+type 'k m = M_ok of 'k | M_bad of string * string list | M_none
 
-let rec run : type f r. (f, r) path -> string list -> (string -> string list) -> (f -> r) m =
- fun p segs q ->
+let rec run : type f r.
+    (f, r) path -> final:bool -> string list -> (string -> string list) -> ((f -> r) * string list) m =
+ fun p ~final segs q ->
   match p with
   | End trailing -> (
-      match segs with
-      | [] -> M_ok Fun.id
-      | [ "" ] when trailing -> M_ok Fun.id
-      | _ -> M_none)
-  | Lit (l, rest) -> (
-      match segs with x :: tl when String.equal x l -> run rest tl q | _ -> M_none)
+      if not final then M_ok (Fun.id, segs)
+      else match segs with [] -> M_ok (Fun.id, []) | [ "" ] when trailing -> M_ok (Fun.id, []) | _ -> M_none)
+  | Lit (l, rest) -> ( match segs with x :: tl when String.equal x l -> run rest ~final tl q | _ -> M_none)
   | Cap (c, rest) -> (
       match segs with
       | x :: tl -> (
           match c.parse x with
           | None -> M_none
           | Some v -> (
-              match run rest tl q with
-              | M_ok k -> M_ok (fun f -> k (f v))
+              match run rest ~final tl q with
+              | M_ok (k, left) -> M_ok ((fun f -> k (f v)), left)
               | (M_bad _ | M_none) as m -> m))
       | [] -> M_none)
-  | Rest -> M_ok (fun f -> f segs)
+  | Rest -> M_ok ((fun f -> f segs), [])
   | Query (inner, param) -> (
-      match run inner segs q with
-      | M_ok k -> (
+      match run inner ~final segs q with
+      | M_ok (k, left) -> (
           match param.decode (q param.key) with
-          | Ok v -> M_ok (fun f -> k f v)
-          | Error e -> M_bad e)
+          | Ok v -> M_ok ((fun f -> k f v), left)
+          | Error e -> M_bad (e, left))
       | (M_bad _ | M_none) as m -> m)
+  | Concat (a, b) -> (
+      match run a ~final:false segs q with
+      | M_none -> M_none
+      | M_ok (k1, left) -> (
+          match run b ~final left q with
+          | M_ok (k2, left) -> M_ok ((fun f -> k2 (k1 f)), left)
+          | (M_bad _ | M_none) as m -> m)
+      | M_bad (e, left) -> (
+          (* Reported only if the rest matches too. *)
+          match run b ~final left q with
+          | M_none -> M_none
+          | M_ok (_, left) | M_bad (_, left) -> M_bad (e, left)))
 
-type 'r endpoint = Endpoint : ('f, 'r) path * (Request.t -> 'f) -> 'r endpoint
+type middleware = (Request.t -> Response.t) -> Request.t -> Response.t
 
-(* [finish] turns the handler's result into a response: the identity for
-   HTTP routes, [Response.websocket] for [ws]. *)
-type route =
+type ('ctx, 'r) endpoint = Endpoint : ('f, 'r) path * (Request.t -> 'ctx -> 'f) -> ('ctx, 'r) endpoint
+
+(* A route's handler gets the context of the scope it is in ([unit] at the
+   top). [finish] turns the handler's result into a response: the identity
+   for HTTP routes, [Response.websocket] for [ws]. A [Scope] matches its
+   prefix, builds its routes' context from the captures and the outer
+   context, and wraps them in its middleware. *)
+type 'ctx route =
   | Route : {
       meth : Httpun.Method.t option;
       upgrade : bool;  (* only matches WebSocket upgrade requests *)
       path : ('f, 'r) path;
-      handler : Request.t -> 'f;
+      handler : Request.t -> 'ctx -> 'f;
       finish : 'r -> Response.t;
     }
-      -> route
+      -> 'ctx route
+  | Scope : {
+      prefix : ('f, ('ctx, Response.t) result) path;
+      build : Request.t -> 'outer -> 'f;
+      middleware : middleware list;
+      inner : 'ctx route;
+    }
+      -> 'outer route
 
-let ( @-> ) p h = Endpoint (p, h)
+let ( @-> ) p h = Endpoint (p, fun req _ -> h req)
+let ( @=> ) p h = Endpoint (p, h)
 let meth m (Endpoint (path, handler)) = Route { meth = Some m; upgrade = false; path; handler; finish = Fun.id }
 let get e = meth `GET e
 let post e = meth `POST e
@@ -179,6 +207,11 @@ let ws ?headers ?max_message (Endpoint (path, handler)) =
       finish = Response.websocket ?headers ?max_message;
     }
 
+let scope ?(middleware = []) prefix build routes =
+  List.map (fun inner -> Scope { prefix; build; middleware; inner }) routes
+
+let group ?middleware prefix routes = scope ?middleware prefix (fun _req ctx -> Ok ctx) routes
+
 let wants_upgrade req =
   match Request.header req "upgrade" with
   | Some v -> List.mem "websocket" (List.map (fun s -> String.lowercase_ascii (String.trim s)) (String.split_on_char ',' v))
@@ -195,14 +228,46 @@ type outcome =
    [Response.send] leaves the body out. *)
 let meth_matches m req_meth = m = req_meth || (m = `GET && req_meth = `HEAD)
 
-let matches (Route { meth; upgrade; path; handler; finish }) req =
-  match run path (Request.segments req) (Request.query req) with
-  | M_none -> No_match
-  | (M_ok _ | M_bad _) when (match meth with Some m -> not (meth_matches m (Request.meth req)) | None -> false) ->
-      Wrong_method (Option.get meth)
-  | (M_ok _ | M_bad _) when upgrade && not (wants_upgrade req) -> Needs_upgrade
-  | M_bad e -> Bad_query e
-  | M_ok k -> Matched (fun () -> finish (k (handler req)))
+type 'k found = F_ok of 'k | F_wrong_method of Httpun.Method.t | F_upgrade | F_bad of string | F_none
+
+(* What runs on a match takes the request again: scope middleware may hand
+   its own to what it wraps. *)
+let rec find : type ctx. ctx route -> Request.t -> string list -> (Request.t -> ctx -> Response.t) found =
+ fun r req segs ->
+  let q = Request.query req in
+  match r with
+  | Route { meth; upgrade; path; handler; finish } -> (
+      match run path ~final:true segs q with
+      | M_none -> F_none
+      | (M_ok _ | M_bad _) when (match meth with Some m -> not (meth_matches m (Request.meth req)) | None -> false)
+        ->
+          F_wrong_method (Option.get meth)
+      | (M_ok _ | M_bad _) when upgrade && not (wants_upgrade req) -> F_upgrade
+      | M_bad (e, _) -> F_bad e
+      | M_ok (k, _) -> F_ok (fun req ctx -> finish (k (handler req ctx))))
+  | Scope { prefix; build; middleware; inner } -> (
+      match run prefix ~final:false segs q with
+      | M_none -> F_none
+      | M_bad (e, left) -> (
+          match find inner req left with
+          | F_ok _ -> F_bad e
+          | (F_wrong_method _ | F_upgrade | F_bad _ | F_none) as o -> o)
+      | M_ok (k, left) -> (
+          match find inner req left with
+          | F_ok run ->
+              F_ok
+                (fun req outer ->
+                  let core req = match k (build req outer) with Ok ctx -> run req ctx | Error resp -> resp in
+                  List.fold_right (fun m h -> m h) middleware core req)
+          | (F_wrong_method _ | F_upgrade | F_bad _ | F_none) as o -> o))
+
+let matches r req =
+  match find r req (Request.segments req) with
+  | F_ok run -> Matched (fun () -> run req ())
+  | F_wrong_method m -> Wrong_method m
+  | F_upgrade -> Needs_upgrade
+  | F_bad e -> Bad_query e
+  | F_none -> No_match
 
 let url p =
   let rec go : type f r. (f, r) path -> (string list -> (string * string) list -> r) -> f =
@@ -220,6 +285,7 @@ let url p =
     | Query (inner, param) ->
         go inner (fun segs qs v -> k segs (qs @ List.map (fun x -> (param.key, x)) (param.encode v)))
     | Rest -> fun segs -> k segs []
+    | Concat (a, b) -> go a (fun s1 q1 -> go b (fun s2 q2 -> k (s1 @ s2) (q1 @ q2)))
   in
   go p (fun segs qs ->
       List.iter
@@ -230,44 +296,64 @@ let url p =
       let path = "/" ^ String.concat "/" (List.map Codec.encode_segment segs) in
       if qs = [] then path else path ^ "?" ^ Codec.render_query qs)
 
-let pattern p =
-  let rec go : type f r. (f, r) path -> string list * string list = function
-    | End _ -> ([], [])
-    | Lit (l, rest) ->
-        let segs, qs = go rest in
-        (l :: segs, qs)
-    | Cap (c, rest) ->
-        let segs, qs = go rest in
-        ((":" ^ c.name) :: segs, qs)
-    | Query (inner, param) ->
-        let segs, qs = go inner in
-        (segs, qs @ [ Printf.sprintf "%s=<%s>" param.key param.desc ])
-    | Rest -> ([ "*" ], [])
-  in
-  let segs, qs = go p in
+let rec pattern_parts : type f r. (f, r) path -> string list * string list = function
+  | End _ -> ([], [])
+  | Lit (l, rest) ->
+      let segs, qs = pattern_parts rest in
+      (l :: segs, qs)
+  | Cap (c, rest) ->
+      let segs, qs = pattern_parts rest in
+      ((":" ^ c.name) :: segs, qs)
+  | Query (inner, param) ->
+      let segs, qs = pattern_parts inner in
+      (segs, qs @ [ Printf.sprintf "%s=<%s>" param.key param.desc ])
+  | Rest -> ([ "*" ], [])
+  | Concat (a, b) ->
+      let s1, q1 = pattern_parts a and s2, q2 = pattern_parts b in
+      (s1 @ s2, q1 @ q2)
+
+let render_pattern (segs, qs) =
   let path = "/" ^ String.concat "/" segs in
   if qs = [] then path else path ^ "?" ^ String.concat "&" qs
 
-let route_pattern (Route { meth; upgrade; path; _ }) =
-  (if upgrade then "WS" else match meth with Some m -> Httpun.Method.to_string m | None -> "*")
-  ^ " " ^ pattern path
+let pattern p = render_pattern (pattern_parts p)
+
+let rec route_parts : type ctx. ctx route -> string * (string list * string list) = function
+  | Route { meth; upgrade; path; _ } ->
+      ( (if upgrade then "WS" else match meth with Some m -> Httpun.Method.to_string m | None -> "*"),
+        pattern_parts path )
+  | Scope { prefix; inner; _ } ->
+      let s1, q1 = pattern_parts prefix and label, (s2, q2) = route_parts inner in
+      (label, (s1 @ s2, q1 @ q2))
+
+let route_pattern r =
+  let label, parts = route_parts r in
+  label ^ " " ^ render_pattern parts
 
 type key = Key_lit of string | Key_cap of { id : int; accepts : string -> bool }
 
 type ending = End_exact of bool | End_rest
 
-let keys (Route { path = p; _ }) =
-  let rec go : type f r. (f, r) path -> key list * ending = function
-    | End trailing -> ([], End_exact trailing)
-    | Rest -> ([], End_rest)
-    | Lit (l, rest) ->
-        let ks, t = go rest in
-        (Key_lit l :: ks, t)
-    | Cap (c, rest) ->
-        let ks, t = go rest in
-        (Key_cap { id = c.id; accepts = (fun s -> Option.is_some (c.parse s)) } :: ks, t)
-    | Query (inner, _) -> go inner
-  in
-  go p
+let rec path_keys : type f r. (f, r) path -> key list * ending = function
+  | End trailing -> ([], End_exact trailing)
+  | Rest -> ([], End_rest)
+  | Lit (l, rest) ->
+      let ks, t = path_keys rest in
+      (Key_lit l :: ks, t)
+  | Cap (c, rest) ->
+      let ks, t = path_keys rest in
+      (Key_cap { id = c.id; accepts = (fun s -> Option.is_some (c.parse s)) } :: ks, t)
+  | Query (inner, _) -> path_keys inner
+  | Concat (a, b) ->
+      let k1, _ = path_keys a and k2, t = path_keys b in
+      (k1 @ k2, t)
 
-let is_ws (Route { upgrade; _ }) = upgrade
+let rec keys : type ctx. ctx route -> key list * ending = function
+  | Route { path; _ } -> path_keys path
+  | Scope { prefix; inner; _ } ->
+      let k1, _ = path_keys prefix and k2, t = keys inner in
+      (k1 @ k2, t)
+
+let rec is_ws : type ctx. ctx route -> bool = function
+  | Route { upgrade; _ } -> upgrade
+  | Scope { inner; _ } -> is_ws inner

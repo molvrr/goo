@@ -169,6 +169,78 @@ print_endline "-- header injection";
   List.iter
     (fun t -> check ("filename: " ^ t ^ " -> 404") (status (fetch t) = 404))
     [ "/raw/..%2F..%2Fetc%2Fpasswd"; "/raw/%2E%2E"; "/raw/.env"; "/raw/a%5Cb"; "/raw/a%00b"; "/raw/a%0Ab"; "/raw/a%7Fb" ];
+print_endline "-- scopes";
+  let trace = ref [] in
+  let note s = trace := s :: !trace in
+  let traced name : Route.middleware = fun next req -> note name; next req in
+  let builds = ref 0 in
+  let org () = Route.(s "orgs" / int /? nil) and members () = Route.(s "members" /? nil) in
+  let scoped =
+    Route.(
+      scope ~middleware:[ traced "outer-a"; traced "outer-b" ] (org ())
+        (fun _req () id ->
+          incr builds;
+          if id = 1 then Ok ("org" ^ string_of_int id) else Error (Response.text ~status:`Not_found "no such org"))
+        ([ get (members () @=> fun _req org -> Response.text (org ^ " members"));
+           delete (s "members" / int /? nil @=> fun _req org m -> Response.text (Printf.sprintf "%s -%d" org m));
+           get (s "about" /? nil @-> fun _req -> Response.text "about");
+           get (s "files" /? rest @=> fun _req org segs -> Response.text (org ^ ":" ^ String.concat "|" segs)) ]
+        @ scope ~middleware:[ traced "inner" ] (s "teams" / string /? nil)
+            (fun req org team -> Ok (org, team, Request.header req "x-seen"))
+            [ get (nil @=> fun _req (org, team, seen) ->
+                  Response.text (Printf.sprintf "%s/%s seen=%s" org team (Option.value ~default:"-" seen))) ]))
+  in
+  let add_header : Route.middleware =
+   fun next req ->
+    next (Request.make ~meth:(Request.meth req) ~headers:[ ("x-seen", "yes") ] (Request.target req))
+  in
+  let admin_only : Route.middleware =
+   fun next req ->
+    if Request.header req "x-admin" = Some "1" then next req else Response.text ~status:`Forbidden "Forbidden"
+  in
+  let scoped_app =
+    App.create ()
+    |> App.routes scoped
+    |> App.routes
+         Route.(
+           group ~middleware:[ admin_only; add_header ] (s "admin" /? nil)
+             [ get (s "panel" /? nil @-> fun req -> Response.text ("panel " ^ Option.value ~default:"-" (Request.header req "x-seen"))) ])
+    |> App.routes
+         Route.(
+           scope (s "q" /? nil /& Q.int "v") (fun _req () v -> Ok v)
+             [ get (s "x" /? nil @=> fun _req v -> Response.text (string_of_int v)) ])
+  in
+  let sreq ?(meth = `GET) ?(headers = []) t = App.handle scoped_app (Request.make ~meth ~headers t) in
+  check "context from the prefix" (body (sreq "/orgs/1/members") = "org1 members");
+  check "build's Error is the response" (status (sreq "/orgs/2/members") = 404 && body (sreq "/orgs/2/members") = "no such org");
+  check "capture after the prefix" (body (sreq ~meth:`DELETE "/orgs/1/members/5") = "org1 -5");
+  check "@-> ignores the context" (body (sreq "/orgs/1/about") = "about");
+  check "rest in a scope" (body (sreq "/orgs/1/files/a/b") = "org1:a|b");
+  check "HEAD through a scope" (status (sreq ~meth:`HEAD "/orgs/1/members") = 200);
+  check "prefix capture must parse" (status (sreq "/orgs/x/members") = 404);
+  trace := [];
+  builds := 0;
+  check "404 inside the prefix" (status (sreq "/orgs/1/nope") = 404);
+  check "405 inside the prefix" (status (sreq ~meth:`POST "/orgs/1/members") = 405);
+  check "  no middleware, no build on 404/405" (!trace = [] && !builds = 0);
+  trace := [];
+  ignore (sreq "/orgs/1/teams/red");
+  check "middleware outermost first, then inner" (List.rev !trace = [ "outer-a"; "outer-b"; "inner" ]);
+  check "nested context" (body (sreq "/orgs/1/teams/red") = "org1/red seen=-");
+  check "nested scope stops at outer Error" (status (sreq "/orgs/2/teams/red") = 404);
+  check "group: refused before the handler" (status (sreq "/admin/panel") = 403);
+  check "group: middleware hands a new request down"
+    (body (sreq ~headers:[ ("x-admin", "1") ] "/admin/panel") = "panel yes");
+  check "query in the prefix" (body (sreq "/q/x?v=7") = "7");
+  check "bad prefix query -> 400" (status (sreq "/q/x?v=seven") = 400);
+  check "bad prefix query, no route -> 404" (status (sreq "/q/y?v=seven") = 404);
+  check "url with //" (Route.(url (org () // members ())) 7 = "/orgs/7/members");
+  check "url with // and captures on both sides"
+    (Route.url Route.(org () // (s "members" / int /? nil)) 7 3 = "/orgs/7/members/3");
+  check "describe"
+    (List.mem "GET /orgs/:int/members" (App.describe scoped_app)
+    && List.mem "GET /orgs/:int/teams/:string" (App.describe scoped_app)
+    && List.mem "GET /q/x?v=<int>" (App.describe scoped_app));
   print_endline "-- rest";
   let docs () = Route.(s "docs" /? rest) in
   check "rest url" (Route.url (docs ()) [ "a b"; "c" ] = "/docs/a%20b/c" && Route.url (docs ()) [] = "/docs");

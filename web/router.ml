@@ -1,8 +1,8 @@
 type node = {
   lits : (string, node) Hashtbl.t;
   mutable caps : (int * (string -> bool) * node) list;  (* insertion order *)
-  mutable ends : (Route.route * bool) list;  (* routes ending here, with trailing-slash flag *)
-  mutable rests : Route.route list;  (* [Route.rest] routes taking whatever follows *)
+  mutable ends : (unit Route.route * bool) list;  (* routes ending here, with trailing-slash flag *)
+  mutable rests : unit Route.route list;  (* [Route.rest] routes taking whatever follows *)
 }
 
 type t = node

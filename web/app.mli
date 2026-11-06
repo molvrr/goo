@@ -15,13 +15,13 @@ type middleware = handler -> handler
 type t
 
 val create : unit -> t
-val route : Route.route -> t -> t
+val route : unit Route.route -> t -> t
 (** Add a route. Lookup uses a trie ({!Router}): at each path segment a
     literal beats a capture, so [/users/new] reaches [s "users" / s "new"]
     even if [s "users" / string] was added first; otherwise routes are tried
     in the order they were added. *)
 
-val routes : Route.route list -> t -> t
+val routes : unit Route.route list -> t -> t
 
 val use : middleware -> t -> t
 (** Add middleware around every request, including 404s and errors. The
