@@ -1,0 +1,4 @@
+(library
+ (name datastar)
+ (public_name datastar)
+ (libraries html yojson))

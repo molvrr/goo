@@ -1,0 +1,15 @@
+(library
+ (name caqti_goo)
+ (public_name caqti-goo)
+ (libraries
+  goo
+  caqti
+  caqti.platform
+  caqti.platform.unix
+  logs
+  mtime
+  mtime.clock.os
+  ipaddr
+  domain-name
+  uri
+  unix))

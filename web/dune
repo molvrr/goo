@@ -1,0 +1,5 @@
+(library
+ (name web)
+ (public_name web)
+ (private_modules codec)
+ (libraries goo html httpun httpun-ws gluten bigstringaf faraday logs digestif.ocaml uri))

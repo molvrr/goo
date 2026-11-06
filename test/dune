@@ -1,0 +1,21 @@
+(tests
+ (names test_html test_csp test_datastar)
+ (modules test_html test_csp test_datastar)
+ (libraries html csp datastar yojson))
+
+(test
+ (name test_datastar_web)
+ (modules test_datastar_web)
+ (libraries datastar datastar.web web goo html yojson))
+
+; Goo, HttpunGoo and Web. test_httpun_goo needs curl on the PATH.
+(tests
+ (names test_goo test_goo_parallel test_goo_server test_goo_sync test_httpun_goo test_web)
+ (modules test_goo test_goo_parallel test_goo_server test_goo_sync test_httpun_goo test_web)
+ (libraries goo web unix httpun gluten logs logs.fmt))
+
+; Needs initdb and postgres on the PATH (the dev shell has them); skipped otherwise.
+(test
+ (name test_caqti_goo)
+ (modules test_caqti_goo)
+ (libraries caqti-goo caqti caqti-driver-postgresql goo unix uri))
