@@ -133,7 +133,32 @@ let unit_tests () =
     (body (get "/sse") = "event: greeting\nid: 1\ndata: hello\ndata: world\n\ndata: bye\n\n");
 
   print_endline "-- reverse routing";
-  check "url" (Route.url (user_path ()) 42 = "/users/42");
+print_endline "-- header injection";
+  let rejects f = match f () with _ -> false | exception Invalid_argument _ -> true in
+  check "redirect with CRLF rejected" (rejects (fun () -> Response.redirect "/home\r\nSet-Cookie: a=1"));
+  check "bare LF rejected" (rejects (fun () -> Response.with_header "x-a" "a\nb" (Response.text "")));
+  check "NUL rejected" (rejects (fun () -> Response.make ~headers:[ ("x-a", "a\000") ] ""));
+  check "bad header name rejected" (rejects (fun () -> Response.with_header "x a:" "v" (Response.text "")));
+  check "stream/sse headers checked" (rejects (fun () -> Response.sse ~headers:[ ("x-a", "\r") ] ignore));
+  check "ordinary values pass"
+    (Response.header (Response.with_header "X-Tab" "a\tb é" (Response.text "")) "x-tab" = Some "a\tb é");
+  let next_app =
+    App.create ()
+    |> App.route Route.(get (s "go" /? nil /& Q.string "next" @-> fun _ next -> Response.redirect next))
+  in
+  let r = App.handle next_app (Request.make "/go?next=/home%0d%0aSet-Cookie:%20pwn=1") in
+  check "injected redirect -> 500, no header" (status r = 500 && Response.header r "set-cookie" = None);
+  check "client headers checked"
+    (rejects (fun () -> Client.get ~headers:[ ("x-a", "1\r\nx-b: 2") ] "http://127.0.0.1:9/"));
+  print_endline "-- dot segments";
+  let files () = Route.(s "files" / string /? nil) in
+  check "url escapes .." (Route.url (files ()) ".." = "/files/%2E%2E");
+  check "url escapes ." (Route.url (files ()) "." = "/files/%2E");
+  check "url keeps ..x" (Route.url (files ()) "..x" = "/files/..x");
+  let files_app = App.create () |> App.route Route.(get (files () @-> fun _ f -> Response.text f)) in
+  check "escaped .. round-trips"
+    (body (App.handle files_app (Request.make (Route.url (files ()) ".."))) = "..");
+    check "url" (Route.url (user_path ()) 42 = "/users/42");
   check "url encodes segments"
     (Route.url Route.(s "users" / string / s "delete" /? nil) "a/b c" = "/users/a%2Fb%20c/delete");
   check "url with query"

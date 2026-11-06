@@ -20,11 +20,18 @@ let encode ~keep s =
     s;
   Buffer.contents b
 
-(* A path segment: '/' must be encoded; sub-delims and ':' '@' may stay. *)
-let encode_segment =
-  encode ~keep:(function
-    | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '=' | ':' | '@' -> true
-    | _ -> false)
+(* A path segment: '/' must be encoded; sub-delims and ':' '@' may stay.
+   "." and ".." are escaped too: written as is, clients resolve them as dot
+   segments (/files/.. becomes /), so the link wouldn't reach the route. *)
+let encode_segment = function
+  | "." -> "%2E"
+  | ".." -> "%2E%2E"
+  | s ->
+      encode
+        ~keep:(function
+          | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '=' | ':' | '@' -> true
+          | _ -> false)
+        s
 
 let encode_query_part = encode ~keep:(fun _ -> false)
 
@@ -80,6 +87,26 @@ let parse_query qs =
 let render_query pairs =
   String.concat "&"
     (List.map (fun (k, v) -> encode_query_part k ^ "=" ^ encode_query_part v) pairs)
+
+(* Header fields about to be sent. A CR or LF in a value would end the
+   header early and let whoever controls it add headers or a body (response
+   splitting, request smuggling); NUL is rejected by most peers. Names must
+   be RFC 9110 tokens. *)
+let is_tchar = function
+  | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9'
+  | '!' | '#' | '$' | '%' | '&' | '\'' | '*' | '+' | '-' | '.' | '^' | '_' | '`' | '|' | '~' ->
+      true
+  | _ -> false
+
+let check_header (name, value) =
+  if name = "" || not (String.for_all is_tchar name) then
+    invalid_arg (Printf.sprintf "invalid header name %S" name);
+  if String.exists (function '\r' | '\n' | '\000' -> true | _ -> false) value then
+    invalid_arg (Printf.sprintf "invalid value for header %s: contains CR, LF or NUL" name)
+
+let check_headers headers =
+  List.iter check_header headers;
+  headers
 
 (* "/users?x=1" -> ("/users", "x=1") *)
 let split_target target =

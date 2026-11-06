@@ -113,6 +113,7 @@ let make wsd = { wsd; inbox = Goo.Chan.create (); ended = false; finished = fals
 
 let connect ?(headers = []) ?(max_message = 1 lsl 20) url session =
   let ep = Codec.endpoint ~schemes:[ "ws"; "http" ] url in
+  let headers = Codec.check_headers headers in
   let fd = Codec.connect ep.addr in
   Fun.protect
     ~finally:(fun () -> Goo.protect (fun () -> Goo.close fd))

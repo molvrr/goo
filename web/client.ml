@@ -137,7 +137,8 @@ let exchange ?pool ?(meth = `GET) ?(headers = []) ?body ?timeout url f =
        | Some b, _ -> add "content-length" (string_of_int (String.length b))
        | None, (`POST | `PUT) -> add "content-length" "0"
        | None, _ -> Fun.id)
-    |> if Option.is_none pool then add "connection" "close" else Fun.id
+    |> (if Option.is_none pool then add "connection" "close" else Fun.id)
+    |> Codec.check_headers
   in
   with_timeout timeout (fun () ->
       let c = checkout pool ep in

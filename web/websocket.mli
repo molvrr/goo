@@ -39,7 +39,9 @@ val is_closed : t -> bool
 val connect : ?headers:(string * string) list -> ?max_message:int -> string -> (t -> 'a) -> 'a
 (** [connect url session] opens a client connection ([ws://] or
     [http://]), runs [session] and closes the connection when it returns.
-    @raise Failure if the handshake fails. *)
+    @raise Failure if the handshake fails.
+    @raise Invalid_argument for a header name that isn't a token or a value
+    containing CR, LF or NUL. *)
 
 (**/**)
 

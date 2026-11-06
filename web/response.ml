@@ -9,10 +9,11 @@ let has name headers = List.exists (fun (k, _) -> lower k = lower name) headers
 let header t name = List.find_map (fun (k, v) -> if lower k = lower name then Some v else None) t.headers
 
 let with_header name value t =
+  Codec.check_header (name, value);
   { t with headers = (name, value) :: List.filter (fun (k, _) -> lower k <> lower name) t.headers }
 
 let add_default name value headers = if has name headers then headers else headers @ [ (name, value) ]
-let make ?(status = `OK) ?(headers = []) s = { status; headers; body = String s }
+let make ?(status = `OK) ?(headers = []) s = { status; headers = Codec.check_headers headers; body = String s }
 let empty status = make ~status ""
 
 let typed ct ?status ?(headers = []) s =
@@ -23,8 +24,10 @@ let html_string = typed "text/html; charset=utf-8"
 let html ?status ?headers doc = html_string ?status ?headers (Html.render_document doc)
 let html_elt ?status ?headers elt = html_string ?status ?headers (Html.render elt)
 let json = typed "application/json"
-let redirect ?(status = `See_other) location = { (empty status) with headers = [ ("location", location) ] }
-let stream ?(status = `OK) ?(headers = []) f = { status; headers; body = Stream f }
+let redirect ?(status = `See_other) location =
+  { (empty status) with headers = Codec.check_headers [ ("location", location) ] }
+
+let stream ?(status = `OK) ?(headers = []) f = { status; headers = Codec.check_headers headers; body = Stream f }
 let status t = t.status
 let headers t = t.headers
 
@@ -67,7 +70,7 @@ let sse ?(headers = []) ?(ping = 15.) f =
       Goo.join s)
 
 let websocket ?(headers = []) ?(max_message = 1 lsl 20) session =
-  { status = `Switching_protocols; headers; body = Websocket (max_message, session) }
+  { status = `Switching_protocols; headers = Codec.check_headers headers; body = Websocket (max_message, session) }
 
 let body_to_string t =
   match t.body with

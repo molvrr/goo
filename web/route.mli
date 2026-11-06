@@ -111,7 +111,8 @@ val ws :
 
 val url : ('f, string) path -> 'f
 (** Print a URL: [url (s "users" / int /? nil) 42] is ["/users/42"], with
-    segments and query values percent-encoded.
+    segments and query values percent-encoded (a ["."] or [".."] capture
+    too, so clients don't resolve it as a dot segment).
 
     Because of OCaml's value restriction, a path bound with [let] and used
     both as a route and with [url] must be a function:

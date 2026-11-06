@@ -38,7 +38,10 @@ val create_pool : ?max_idle_per_host:int -> unit -> pool
 val close_pool : pool -> unit
 val with_pool : ?max_idle_per_host:int -> (pool -> 'a) -> 'a
 
-(** {1 Requests} *)
+(** {1 Requests}
+
+    Headers are checked as for {!Response}: [Invalid_argument] for a name
+    that isn't a token or a value containing CR, LF or NUL. *)
 
 val request :
   ?pool:pool ->

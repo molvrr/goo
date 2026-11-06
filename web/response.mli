@@ -1,4 +1,10 @@
-(** An HTTP response: status, headers and a body. *)
+(** An HTTP response: status, headers and a body.
+
+    Header names must be tokens and values can't contain CR, LF or NUL:
+    every function taking headers (or a redirect location) raises
+    [Invalid_argument] otherwise, so a value copied from a request (e.g. a
+    [?next=] redirect target) can't inject headers. Raised in a handler,
+    that's a 500. *)
 
 type t
 
