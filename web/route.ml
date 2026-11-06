@@ -12,7 +12,21 @@ let parse_int s =
   in
   if digits_from (if n > 0 && s.[0] = '-' then 1 else 0) then int_of_string_opt s else None
 
-let string_conv = conv ~name:"string" ~parse:(fun s -> if s = "" then None else Some s) ~print:Fun.id
+(* "", "." and ".." can't arrive from a browser as a segment (they are
+   resolved away), so they are never a legitimate value: refusing them keeps
+   them out of handlers. *)
+let is_dot_segment s = s = "" || s = "." || s = ".."
+let string_conv = conv ~name:"string" ~parse:(fun s -> if is_dot_segment s then None else Some s) ~print:Fun.id
+
+(* A single file name, safe to join to a directory: no separator, no
+   parent reference, no NUL or control characters, and not hidden (which
+   also excludes "." and ".."). *)
+let is_filename s =
+  s <> ""
+  && s.[0] <> '.'
+  && not (String.exists (fun c -> c = '/' || c = '\\' || Char.code c < 0x20 || Char.code c = 0x7f) s)
+
+let filename_conv = conv ~name:"filename" ~parse:(fun s -> if is_filename s then Some s else None) ~print:Fun.id
 let int_conv = conv ~name:"int" ~parse:parse_int ~print:string_of_int
 
 module Q = struct
@@ -97,6 +111,7 @@ let s lit rest = Lit (lit, rest)
 let custom c rest = Cap (c, rest)
 let string rest = Cap (string_conv, rest)
 let int rest = Cap (int_conv, rest)
+let filename rest = Cap (filename_conv, rest)
 let nil = End false
 let trail = End true
 let ( / ) a b rest = a (b rest)
@@ -197,11 +212,22 @@ let url p =
     match p with
     | End _ -> k [] []
     | Lit (l, rest) -> go rest (fun segs qs -> k (l :: segs) qs)
-    | Cap (c, rest) -> fun v -> go rest (fun segs qs -> k (c.print v :: segs) qs)
+    | Cap (c, rest) ->
+        fun v ->
+          let seg = c.print v in
+          (* A value its own capture would refuse makes a dead link. *)
+          if Option.is_none (c.parse seg) then
+            invalid_arg (Printf.sprintf "Route.url: %S isn't a valid %s segment" seg c.name);
+          go rest (fun segs qs -> k (seg :: segs) qs)
     | Query (inner, param) ->
         go inner (fun segs qs v -> k segs (qs @ List.map (fun x -> (param.key, x)) (param.encode v)))
   in
   go p (fun segs qs ->
+      List.iter
+        (fun seg ->
+          if is_dot_segment seg then
+            invalid_arg (Printf.sprintf "Route.url: %S can't be a path segment" seg))
+        segs;
       let path = "/" ^ String.concat "/" (List.map Codec.encode_segment segs) in
       if qs = [] then path else path ^ "?" ^ Codec.render_query qs)
 

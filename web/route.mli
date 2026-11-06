@@ -34,7 +34,16 @@ val s : string -> ('f, 'r) path -> ('f, 'r) path
 (** A literal segment. *)
 
 val string : ('f, 'r) path -> (string -> 'f, 'r) path
-(** A non-empty segment, percent-decoded. *)
+(** A segment, percent-decoded, other than [""], ["."] and [".."]. It may
+    still contain anything else, including ["/"] (from [%2F]), ["\\"] and
+    NUL: use {!filename} for a value that names a file. *)
+
+val filename : ('f, 'r) path -> (string -> 'f, 'r) path
+(** A segment that is a single, non-hidden file name, safe to join to a
+    directory: percent-decoded, non-empty, not starting with ["."] (so
+    neither ["."] nor [".."]), and without ["/"], ["\\"], NUL or control
+    characters. It still doesn't stop a symlink inside the directory from
+    pointing outside it. *)
 
 val int : ('f, 'r) path -> (int -> 'f, 'r) path
 (** A decimal integer segment (optional leading [-]). *)
@@ -111,8 +120,12 @@ val ws :
 
 val url : ('f, string) path -> 'f
 (** Print a URL: [url (s "users" / int /? nil) 42] is ["/users/42"], with
-    segments and query values percent-encoded (a ["."] or [".."] capture
-    too, so clients don't resolve it as a dot segment).
+    segments and query values percent-encoded.
+
+    @raise Invalid_argument if a captured value would be refused by its own
+    capture (e.g. ["../x"] for {!filename}), or a segment would be [""],
+    ["."] or [".."], which clients resolve away whatever the encoding: either
+    way the URL couldn't reach the route.
 
     Because of OCaml's value restriction, a path bound with [let] and used
     both as a route and with [url] must be a function:

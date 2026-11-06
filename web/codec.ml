@@ -21,17 +21,12 @@ let encode ~keep s =
   Buffer.contents b
 
 (* A path segment: '/' must be encoded; sub-delims and ':' '@' may stay.
-   "." and ".." are escaped too: written as is, clients resolve them as dot
-   segments (/files/.. becomes /), so the link wouldn't reach the route. *)
-let encode_segment = function
-  | "." -> "%2E"
-  | ".." -> "%2E%2E"
-  | s ->
-      encode
-        ~keep:(function
-          | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '=' | ':' | '@' -> true
-          | _ -> false)
-        s
+   Callers keep "." and ".." out: no encoding survives a browser (WHATWG
+   treats %2E%2E as ".." too). *)
+let encode_segment =
+  encode ~keep:(function
+    | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '=' | ':' | '@' -> true
+    | _ -> false)
 
 let encode_query_part = encode ~keep:(fun _ -> false)
 

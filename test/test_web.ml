@@ -150,14 +150,29 @@ print_endline "-- header injection";
   check "injected redirect -> 500, no header" (status r = 500 && Response.header r "set-cookie" = None);
   check "client headers checked"
     (rejects (fun () -> Client.get ~headers:[ ("x-a", "1\r\nx-b: 2") ] "http://127.0.0.1:9/"));
-  print_endline "-- dot segments";
+  print_endline "-- dot segments and file names";
   let files () = Route.(s "files" / string /? nil) in
-  check "url escapes .." (Route.url (files ()) ".." = "/files/%2E%2E");
-  check "url escapes ." (Route.url (files ()) "." = "/files/%2E");
+  check "url rejects .." (rejects (fun () -> Route.url (files ()) ".."));
+  check "url rejects ." (rejects (fun () -> Route.url (files ()) "."));
+  check "url rejects empty" (rejects (fun () -> Route.url (files ()) ""));
   check "url keeps ..x" (Route.url (files ()) "..x" = "/files/..x");
-  let files_app = App.create () |> App.route Route.(get (files () @-> fun _ f -> Response.text f)) in
-  check "escaped .. round-trips"
-    (body (App.handle files_app (Request.make (Route.url (files ()) ".."))) = "..");
+  let fs_app =
+    App.create ()
+    |> App.route Route.(get (files () @-> fun _ f -> Response.text f))
+    |> App.route Route.(get (s "raw" / filename /? nil @-> fun _ f -> Response.text f))
+  in
+  let fetch t = App.handle fs_app (Request.make t) in
+  check "string: raw .. -> 404" (status (fetch "/files/..") = 404);
+  check "string: %2E%2E -> 404" (status (fetch "/files/%2E%2E") = 404);
+  check "string: ..x and %2F still pass" (body (fetch "/files/..x") = "..x" && body (fetch "/files/a%2Fb") = "a/b");
+  check "filename: plain" (body (fetch "/raw/report%202024.pdf") = "report 2024.pdf");
+  List.iter
+    (fun t -> check ("filename: " ^ t ^ " -> 404") (status (fetch t) = 404))
+    [ "/raw/..%2F..%2Fetc%2Fpasswd"; "/raw/%2E%2E"; "/raw/.env"; "/raw/a%5Cb"; "/raw/a%00b"; "/raw/a%0Ab"; "/raw/a%7Fb" ];
+  check "filename: url" (Route.url Route.(s "raw" / filename /? nil) "a b.txt" = "/raw/a%20b.txt");
+  check "filename: url rejects ../x" (rejects (fun () -> Route.url Route.(s "raw" / filename /? nil) "../x"));
+  check "filename: url rejects .env" (rejects (fun () -> Route.url Route.(s "raw" / filename /? nil) ".env"));
+  check "literal .. rejected" (rejects (fun () -> Route.url Route.(s ".." /? nil)));
     check "url" (Route.url (user_path ()) 42 = "/users/42");
   check "url encodes segments"
     (Route.url Route.(s "users" / string / s "delete" /? nil) "a/b c" = "/users/a%2Fb%20c/delete");
