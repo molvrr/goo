@@ -56,6 +56,14 @@ val nil : ('r, 'r) path
 val trail : ('r, 'r) path
 (** Like [nil] but also accepts a trailing slash. *)
 
+val rest : (string list -> 'r, 'r) path
+(** End of the path, capturing every remaining segment, percent-decoded
+    and unchecked (possibly none, and [[""]] for a trailing slash):
+    [get (s "docs" /? rest @-> fun _req segs -> ...)]. Tried only when no
+    route without [rest] matches, deepest prefix first. The segments may be
+    anything a client sends, [".."] included: {!Static.serve} validates
+    them. *)
+
 val ( / ) :
   (('b, 'r) path -> ('c, 'r) path) -> (('a, 'r) path -> ('b, 'r) path) -> ('a, 'r) path -> ('c, 'r) path
 
@@ -148,8 +156,8 @@ type outcome =
 val matches : route -> Request.t -> outcome
 
 type key = Key_lit of string | Key_cap of { id : int; accepts : string -> bool }
+type ending = End_exact of bool  (** accepts a trailing slash *) | End_rest
 
-val keys : route -> key list * bool
+val keys : route -> key list * ending
 val is_ws : route -> bool
 val wants_upgrade : Request.t -> bool
-(** The route's path segments, and whether it accepts a trailing slash. *)

@@ -12,19 +12,10 @@ let parse_int s =
   in
   if digits_from (if n > 0 && s.[0] = '-' then 1 else 0) then int_of_string_opt s else None
 
-(* "", "." and ".." can't arrive from a browser as a segment (they are
-   resolved away), so they are never a legitimate value: refusing them keeps
-   them out of handlers. *)
-let is_dot_segment s = s = "" || s = "." || s = ".."
+let is_dot_segment = Codec.is_dot_segment
 let string_conv = conv ~name:"string" ~parse:(fun s -> if is_dot_segment s then None else Some s) ~print:Fun.id
 
-(* A single file name, safe to join to a directory: no separator, no
-   parent reference, no NUL or control characters, and not hidden (which
-   also excludes "." and ".."). *)
-let is_filename s =
-  s <> ""
-  && s.[0] <> '.'
-  && not (String.exists (fun c -> c = '/' || c = '\\' || Char.code c < 0x20 || Char.code c = 0x7f) s)
+let is_filename = Codec.is_filename
 
 let filename_conv = conv ~name:"filename" ~parse:(fun s -> if is_filename s then Some s else None) ~print:Fun.id
 let int_conv = conv ~name:"int" ~parse:parse_int ~print:string_of_int
@@ -106,6 +97,7 @@ type ('f, 'r) path =
   | Lit : string * ('f, 'r) path -> ('f, 'r) path
   | Cap : 'a conv * ('f, 'r) path -> ('a -> 'f, 'r) path
   | Query : ('f, 'a -> 'r) path * 'a Q.t -> ('f, 'r) path
+  | Rest : (string list -> 'r, 'r) path  (* every remaining segment *)
 
 let s lit rest = Lit (lit, rest)
 let custom c rest = Cap (c, rest)
@@ -114,6 +106,7 @@ let int rest = Cap (int_conv, rest)
 let filename rest = Cap (filename_conv, rest)
 let nil = End false
 let trail = End true
+let rest = Rest
 let ( / ) a b rest = a (b rest)
 let ( /? ) a terminator = a terminator
 let ( /& ) p q = Query (p, q)
@@ -142,6 +135,7 @@ let rec run : type f r. (f, r) path -> string list -> (string -> string list) ->
               | M_ok k -> M_ok (fun f -> k (f v))
               | (M_bad _ | M_none) as m -> m))
       | [] -> M_none)
+  | Rest -> M_ok (fun f -> f segs)
   | Query (inner, param) -> (
       match run inner segs q with
       | M_ok k -> (
@@ -197,10 +191,14 @@ type outcome =
   | Bad_query of string
   | No_match
 
+(* HEAD is GET without the body (RFC 9110 9.3.2): GET routes answer it, and
+   [Response.send] leaves the body out. *)
+let meth_matches m req_meth = m = req_meth || (m = `GET && req_meth = `HEAD)
+
 let matches (Route { meth; upgrade; path; handler; finish }) req =
   match run path (Request.segments req) (Request.query req) with
   | M_none -> No_match
-  | (M_ok _ | M_bad _) when (match meth with Some m -> m <> Request.meth req | None -> false) ->
+  | (M_ok _ | M_bad _) when (match meth with Some m -> not (meth_matches m (Request.meth req)) | None -> false) ->
       Wrong_method (Option.get meth)
   | (M_ok _ | M_bad _) when upgrade && not (wants_upgrade req) -> Needs_upgrade
   | M_bad e -> Bad_query e
@@ -221,6 +219,7 @@ let url p =
           go rest (fun segs qs -> k (seg :: segs) qs)
     | Query (inner, param) ->
         go inner (fun segs qs v -> k segs (qs @ List.map (fun x -> (param.key, x)) (param.encode v)))
+    | Rest -> fun segs -> k segs []
   in
   go p (fun segs qs ->
       List.iter
@@ -243,6 +242,7 @@ let pattern p =
     | Query (inner, param) ->
         let segs, qs = go inner in
         (segs, qs @ [ Printf.sprintf "%s=<%s>" param.key param.desc ])
+    | Rest -> ([ "*" ], [])
   in
   let segs, qs = go p in
   let path = "/" ^ String.concat "/" segs in
@@ -254,9 +254,12 @@ let route_pattern (Route { meth; upgrade; path; _ }) =
 
 type key = Key_lit of string | Key_cap of { id : int; accepts : string -> bool }
 
+type ending = End_exact of bool | End_rest
+
 let keys (Route { path = p; _ }) =
-  let rec go : type f r. (f, r) path -> key list * bool = function
-    | End trailing -> ([], trailing)
+  let rec go : type f r. (f, r) path -> key list * ending = function
+    | End trailing -> ([], End_exact trailing)
+    | Rest -> ([], End_rest)
     | Lit (l, rest) ->
         let ks, t = go rest in
         (Key_lit l :: ks, t)

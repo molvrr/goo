@@ -169,6 +169,22 @@ print_endline "-- header injection";
   List.iter
     (fun t -> check ("filename: " ^ t ^ " -> 404") (status (fetch t) = 404))
     [ "/raw/..%2F..%2Fetc%2Fpasswd"; "/raw/%2E%2E"; "/raw/.env"; "/raw/a%5Cb"; "/raw/a%00b"; "/raw/a%0Ab"; "/raw/a%7Fb" ];
+  print_endline "-- rest";
+  let docs () = Route.(s "docs" /? rest) in
+  check "rest url" (Route.url (docs ()) [ "a b"; "c" ] = "/docs/a%20b/c" && Route.url (docs ()) [] = "/docs");
+  check "rest url rejects .." (rejects (fun () -> Route.url (docs ()) [ ".."; "x" ]));
+  check "rest pattern" (Route.pattern (docs ()) = "/docs/*");
+  let rest_app =
+    App.create ()
+    |> App.route Route.(get (docs () @-> fun _ segs -> Response.text ("docs:" ^ String.concat "|" segs)))
+    |> App.route Route.(get (s "docs" / s "api" /? rest @-> fun _ segs -> Response.text ("api:" ^ String.concat "|" segs)))
+    |> App.route Route.(get (s "docs" / s "api" / s "index" /? nil @-> fun _ -> Response.text "exact"))
+  in
+  let rb t = body (App.handle rest_app (Request.make t)) in
+  check "rest: segments" (rb "/docs/a/b%2Fc" = "docs:a|b/c" && rb "/docs" = "docs:" && rb "/docs/" = "docs:");
+  check "rest: deepest prefix first" (rb "/docs/api/x" = "api:x" && rb "/docs/apix" = "docs:apix");
+  check "rest: exact route wins" (rb "/docs/api/index" = "exact");
+  check "HEAD reaches GET routes" (status (App.handle rest_app (Request.make ~meth:`HEAD "/docs/x")) = 200);
   check "filename: url" (Route.url Route.(s "raw" / filename /? nil) "a b.txt" = "/raw/a%20b.txt");
   check "filename: url rejects ../x" (rejects (fun () -> Route.url Route.(s "raw" / filename /? nil) "../x"));
   check "filename: url rejects .env" (rejects (fun () -> Route.url Route.(s "raw" / filename /? nil) ".env"));

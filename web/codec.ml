@@ -20,6 +20,18 @@ let encode ~keep s =
     s;
   Buffer.contents b
 
+(* "", "." and ".." can't arrive from a browser as a segment (they are
+   resolved away), so they are never a legitimate value. *)
+let is_dot_segment s = s = "" || s = "." || s = ".."
+
+(* A single file name, safe to join to a directory: no separator, no
+   parent reference, no NUL or control characters, and not hidden (which
+   also excludes "." and ".."). *)
+let is_filename s =
+  s <> ""
+  && s.[0] <> '.'
+  && not (String.exists (fun c -> c = '/' || c = '\\' || Char.code c < 0x20 || Char.code c = 0x7f) s)
+
 (* A path segment: '/' must be encoded; sub-delims and ':' '@' may stay.
    Callers keep "." and ".." out: no encoding survives a browser (WHATWG
    treats %2E%2E as ".." too). *)

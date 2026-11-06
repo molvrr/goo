@@ -9,7 +9,7 @@ A dune workspace of OCaml libraries for web apps on Goo, with no Eio.
 | `csp` | `csp` | Typed Content-Security-Policy headers |
 | `datastar` | `datastar` | Datastar attributes, action expressions and SSE events |
 | | `datastar.web` | Datastar requests and SSE responses on `web` |
-| `web` | `web` | HTTP/1.1 + WebSocket server and client on Goo (httpun), routes, responses |
+| `web` | `web` | HTTP/1.1 + WebSocket server and client on Goo (httpun), routes, responses, static files |
 | `caqti-goo` | `caqti-goo` | Caqti on Goo, Postgres only, with per-domain pools |
 
 `vendor/` holds patched httpun-ws and the httpun / gluten it builds against

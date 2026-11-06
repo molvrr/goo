@@ -81,8 +81,17 @@ let body_to_string t =
       f (Buffer.add_string b);
       Buffer.contents b
 
+(* No body goes out for HEAD, 204 and 304 (httpun drops it). Their
+   content-length, if any, must be the caller's (the length a GET would
+   have had), never the empty string's. *)
+let bodiless reqd status =
+  (Httpun.Reqd.request reqd).meth = `HEAD || status = `No_content || status = `Not_modified
+
 let respond_string reqd status headers s =
-  let headers = add_default "content-length" (string_of_int (String.length s)) headers in
+  let headers =
+    if bodiless reqd status then headers
+    else add_default "content-length" (string_of_int (String.length s)) headers
+  in
   Httpun.Reqd.respond_with_string reqd
     (Httpun.Response.create ~headers:(Httpun.Headers.of_list headers) status)
     s
@@ -97,6 +106,7 @@ let send ?upgrade t reqd =
           | Ok () -> ()
           | Error msg -> respond_string reqd `Bad_request [ ("content-type", "text/plain") ] msg))
   | String s -> respond_string reqd t.status t.headers s
+  | Stream _ when bodiless reqd t.status -> respond_string reqd t.status t.headers ""
   | Stream f ->
       (* Without a length or chunked encoding httpun keeps the connection
          open after the body and the client can't tell where it ends. *)

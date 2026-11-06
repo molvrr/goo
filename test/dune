@@ -14,6 +14,12 @@
  (modules test_goo test_goo_parallel test_goo_server test_goo_sync test_httpun_goo test_web)
  (libraries goo web unix httpun gluten logs logs.fmt))
 
+; test_static's last part needs curl on the PATH (skipped otherwise).
+(test
+ (name test_static)
+ (modules test_static)
+ (libraries web goo httpun unix))
+
 ; Needs initdb and postgres on the PATH (the dev shell has them); skipped otherwise.
 (test
  (name test_caqti_goo)

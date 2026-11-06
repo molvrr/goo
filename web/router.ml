@@ -2,6 +2,7 @@ type node = {
   lits : (string, node) Hashtbl.t;
   mutable caps : (int * (string -> bool) * node) list;  (* insertion order *)
   mutable ends : (Route.route * bool) list;  (* routes ending here, with trailing-slash flag *)
+  mutable rests : Route.route list;  (* [Route.rest] routes taking whatever follows *)
 }
 
 type t = node
@@ -12,12 +13,15 @@ type result =
   | Upgrade_required
   | Not_found of string list
 
-let node () = { lits = Hashtbl.create 4; caps = []; ends = [] }
+let node () = { lits = Hashtbl.create 4; caps = []; ends = []; rests = [] }
 
 let insert root route =
-  let keys, trailing = Route.keys route in
+  let keys, ending = Route.keys route in
   let rec go n = function
-    | [] -> n.ends <- n.ends @ [ (route, trailing) ]
+    | [] -> (
+        match ending with
+        | Route.End_exact trailing -> n.ends <- n.ends @ [ (route, trailing) ]
+        | Route.End_rest -> n.rests <- n.rests @ [ route ])
     | Route.Key_lit l :: rest ->
         go
           (match Hashtbl.find_opt n.lits l with
@@ -70,14 +74,24 @@ let lookup root req =
         | No_match -> ())
       ends
   in
-  let rec walk n = function
+  (* [rest] routes on the way, with their depth: tried after every exact
+     route, deepest (most specific prefix) first. *)
+  let rests = ref [] in
+  let rec walk depth n segs =
+    if n.rests <> [] then rests := (depth, n.rests) :: !rests;
+    match segs with
     | [] -> try_ends n.ends
     | seg :: rest as segs ->
-        Option.iter (fun c -> walk c rest) (Hashtbl.find_opt n.lits seg);
-        List.iter (fun (_, accepts, c) -> if accepts seg then walk c rest) n.caps;
+        Option.iter (fun c -> walk (depth + 1) c rest) (Hashtbl.find_opt n.lits seg);
+        List.iter (fun (_, accepts, c) -> if accepts seg then walk (depth + 1) c rest) n.caps;
         if segs = [ "" ] then try_ends (List.filter snd n.ends)
   in
-  match walk root (Request.segments req) with
+  let walk_all root segs =
+    walk 0 root segs;
+    List.stable_sort (fun (a, _) (b, _) -> compare b a) (List.rev !rests)
+    |> List.iter (fun (_, routes) -> try_ends (List.map (fun r -> (r, false)) routes))
+  in
+  match walk_all root (Request.segments req) with
   | () when !needs_upgrade -> Upgrade_required
   | () -> Not_found (List.sort_uniq String.compare !allowed)
   | exception Stop r -> r
