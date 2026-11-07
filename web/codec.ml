@@ -121,8 +121,19 @@ let split_target target =
   | Some i -> (String.sub target 0 i, String.sub target (i + 1) (String.length target - i - 1))
   | None -> (target, "")
 
-(* "http://host:8080/a?b" -> address, Host header value, request target. *)
-type endpoint = { addr : Unix.sockaddr; host : string; target : string; key : string }
+(* "http://host:8080/a?b" -> address, Host header value, request target.
+   [hostname] is the bare host (for TLS); [key] identifies the origin for
+   connection pooling. *)
+type endpoint = {
+  addr : Unix.sockaddr;
+  host : string;
+  hostname : string;
+  target : string;
+  key : string;
+  secure : bool;
+}
+
+let default_port = function "https" | "wss" -> 443 | _ -> 80
 
 let endpoint ~schemes url =
   let uri = Uri.of_string url in
@@ -132,8 +143,9 @@ let endpoint ~schemes url =
   let host =
     match Uri.host uri with Some h when h <> "" -> h | _ -> invalid_arg ("URL without host: " ^ url)
   in
-  let port = Option.value ~default:80 (Uri.port uri) in
-  let host_header = if port = 80 then host else Printf.sprintf "%s:%d" host port in
+  let default = default_port scheme in
+  let port = Option.value ~default (Uri.port uri) in
+  let host_header = if port = default then host else Printf.sprintf "%s:%d" host port in
   let target = match Uri.path_and_query uri with "" -> "/" | t -> t in
   (* Blocks this domain while resolving a name; IP literals don't. *)
   let addr =
@@ -146,7 +158,15 @@ let endpoint ~schemes url =
         | { Unix.ai_addr; _ } :: _ -> ai_addr
         | [] -> raise (Unix.Unix_error (Unix.EHOSTUNREACH, "getaddrinfo", host)))
   in
-  { addr; host = host_header; target; key = Printf.sprintf "%s:%d" host port }
+  let secure = scheme = "https" || scheme = "wss" in
+  {
+    addr;
+    host = host_header;
+    hostname = host;
+    target;
+    key = Printf.sprintf "%s://%s:%d" (if secure then "https" else "http") host port;
+    secure;
+  }
 
 let connect addr =
   let fd = Unix.socket ~cloexec:true (Unix.domain_of_sockaddr addr) Unix.SOCK_STREAM 0 in

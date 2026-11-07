@@ -24,6 +24,10 @@
           faraday
           bigstringaf
           httpun-types
+          tls
+          x509
+          ca-certs-nss
+          mirage-crypto-rng
           # datastar
           yojson
           # caqti-goo

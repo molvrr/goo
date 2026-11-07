@@ -15,6 +15,12 @@ depends: [
   "faraday"
   "bigstringaf"
   "httpun-types"
+  "tls"
+  "x509"
+  "ca-certs-nss"
+  "mirage-crypto-rng"
+  "domain-name"
+  "ipaddr"
   "odoc" {with-doc}
 ]
 build: [

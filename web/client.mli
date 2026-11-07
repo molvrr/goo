@@ -1,4 +1,4 @@
-(** HTTP/1.1 client (plain [http://] only).
+(** HTTP/1.1 client for [http://] and [https://].
 
     {[
       let r = Web.Client.get "http://127.0.0.1:8080/users/42" in
@@ -12,7 +12,14 @@
     ]}
 
     Calls block the calling task. Host names are resolved with
-    [getaddrinfo], which blocks the domain briefly; IP literals don't. *)
+    [getaddrinfo], which blocks the domain briefly; IP literals don't.
+
+    [https://] uses TLS 1.2/1.3 ([ocaml-tls]). The server certificate is
+    checked against Mozilla's CA bundle compiled into the binary (so it
+    works without a system trust store); pass [~authenticator] to use
+    something else, e.g. [Ca_certs.authenticator ()] for the OS store or
+    [X509.Authenticator.cert_fingerprint] to pin a certificate. A rejected
+    certificate or failed handshake raises {!Error}. *)
 
 exception Error of string
 (** The server's response couldn't be parsed or the connection failed. *)
@@ -45,6 +52,7 @@ val with_pool : ?max_idle_per_host:int -> (pool -> 'a) -> 'a
 
 val request :
   ?pool:pool ->
+  ?authenticator:X509.Authenticator.t ->
   ?meth:Httpun.Method.t ->
   ?headers:(string * string) list ->
   ?body:string ->
@@ -57,11 +65,26 @@ val request :
     @raise Timeout after [timeout] seconds.
     @raise Error if the response is malformed or too large. *)
 
-val get : ?pool:pool -> ?headers:(string * string) list -> ?timeout:float -> string -> response
-val post : ?pool:pool -> ?headers:(string * string) list -> ?body:string -> ?timeout:float -> string -> response
+val get :
+  ?pool:pool ->
+  ?authenticator:X509.Authenticator.t ->
+  ?headers:(string * string) list ->
+  ?timeout:float ->
+  string ->
+  response
+
+val post :
+  ?pool:pool ->
+  ?authenticator:X509.Authenticator.t ->
+  ?headers:(string * string) list ->
+  ?body:string ->
+  ?timeout:float ->
+  string ->
+  response
 
 val stream :
   ?pool:pool ->
+  ?authenticator:X509.Authenticator.t ->
   ?meth:Httpun.Method.t ->
   ?headers:(string * string) list ->
   ?body:string ->

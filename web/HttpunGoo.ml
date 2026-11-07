@@ -37,32 +37,47 @@ let rec watch_eof fd =
   | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK | EINTR), _, _) -> watch_eof fd
   | exception Unix.Unix_error ((ECONNRESET | ENOTCONN), _, _) -> `Eof
 
+type transport = {
+  read : Bigstringaf.t -> int -> int -> int;
+  write : Bigstringaf.t -> int -> int -> int;
+  watch_eof : unit -> [ `Eof | `Data ];
+  shutdown_receive : unit -> unit;
+  shutdown_send : unit -> unit;
+}
+
+let transport_of_fd fd =
+  {
+    read = (fun buf off len -> R.read_bigarray fd buf off len);
+    write = (fun buf off len -> R.write_bigarray fd buf off len);
+    watch_eof = (fun () -> watch_eof fd);
+    shutdown_receive = (fun () -> shutdown fd Unix.SHUTDOWN_RECEIVE);
+    shutdown_send = (fun () -> shutdown fd Unix.SHUTDOWN_SEND);
+  }
+
 (* Read into gluten's buffer; [0] means EOF (including a reset peer). *)
-let read_into fd buffer =
+let read_into (tr : transport) buffer =
   let n = ref 0 in
   Buffer.put buffer
     ~f:(fun buf ~off ~len k ->
-      k
-        (try R.read_bigarray fd buf off len
-         with Unix.Unix_error ((ECONNRESET | ENOTCONN), _, _) -> 0))
+      k (try tr.read buf off len with Unix.Unix_error ((ECONNRESET | ENOTCONN), _, _) -> 0))
     (fun r -> n := r);
   !n
 
 (* Write iovecs until one is partial. If the peer is gone, report what was
    written so far, or [`Closed] if nothing was. *)
-let writev fd iovecs =
+let writev (tr : transport) iovecs =
   let rec go total = function
     | [] -> `Ok total
     | { Faraday.buffer; off; len } :: rest -> (
-        match R.write_bigarray fd buffer off len with
+        match tr.write buffer off len with
         | n when n < len -> `Ok (total + n)
         | n -> go (total + n) rest
-        | exception Unix.Unix_error ((EPIPE | ECONNRESET | ENOTCONN), _, _) ->
+        | exception (Unix.Unix_error ((EPIPE | ECONNRESET | ENOTCONN), _, _) | End_of_file) ->
             if total > 0 then `Ok total else `Closed)
   in
   go 0 iovecs
 
-let io_loop (type t) (module P : Gluten.RUNTIME with type t = t) ~read_buffer_size (t : t) fd =
+let io_loop (type t) (module P : Gluten.RUNTIME with type t = t) ~read_buffer_size (t : t) (tr : transport) =
   let buffer = Buffer.create read_buffer_size in
   let feed f = Buffer.get buffer ~f:(fun buf ~off ~len -> f t buf ~off ~len) in
   let rec read_loop () =
@@ -73,32 +88,32 @@ let io_loop (type t) (module P : Gluten.RUNTIME with type t = t) ~read_buffer_si
            in the buffer, and the peer may not send anything more until we
            react to them. Only read the socket once nothing is consumed. *)
         if feed P.read = 0 then
-          if read_into fd buffer = 0 then ignore (feed P.read_eof : int) else ignore (feed P.read : int);
+          if read_into tr buffer = 0 then ignore (feed P.read_eof : int) else ignore (feed P.read : int);
         read_loop ()
     | `Yield -> (
         let woken = yield (P.yield_reader t) in
         (* While a request is being handled, watch for the peer going away
            so streaming responses (e.g. SSE) notice the disconnect. *)
-        match first (fun () -> R.Chan.recv woken) (fun () -> watch_eof fd) with
+        match first (fun () -> R.Chan.recv woken) tr.watch_eof with
         | `A () -> read_loop ()
         | `B `Data ->
             R.Chan.recv woken;
             read_loop ()
         | `B `Eof ->
-            shutdown fd Unix.SHUTDOWN_RECEIVE;
+            tr.shutdown_receive ();
             P.report_write_result t `Closed;
             P.report_exn t End_of_file)
-    | `Close -> shutdown fd Unix.SHUTDOWN_RECEIVE
+    | `Close -> tr.shutdown_receive ()
   in
   let rec write_loop () =
     match P.next_write_operation t with
     | `Write iovecs ->
-        P.report_write_result t (writev fd iovecs);
+        P.report_write_result t (writev tr iovecs);
         write_loop ()
     | `Yield ->
         R.Chan.recv (yield (P.yield_writer t));
         write_loop ()
-    | `Close _ -> shutdown fd Unix.SHUTDOWN_SEND
+    | `Close _ -> tr.shutdown_send ()
   in
   (* Tasks spawned while serving (request handlers, websocket sessions)
      join this scope. Once both loops are done the connection is over, so
@@ -118,19 +133,21 @@ let io_loop (type t) (module P : Gluten.RUNTIME with type t = t) ~read_buffer_si
       R.Chan.recv loops_done);
   R.protect (fun () -> R.join s)
 
-let run_protocol = io_loop
+let run_protocol p ~read_buffer_size t fd = io_loop p ~read_buffer_size t (transport_of_fd fd)
 
 module Client = struct
   type t = { connection : Httpun.Client_connection.t; gluten : Gluten.Client.t; io : R.scope }
 
-  let create_connection ?(config = Httpun.Config.default) fd =
+  let create_connection_on ?(config = Httpun.Config.default) tr =
     let connection = Httpun.Client_connection.create ~config () in
     let gluten = Gluten.Client.create ~protocol:(module Httpun.Client_connection) connection in
     let io =
       R.scope
-        [ (fun () -> io_loop (module Gluten.Client) ~read_buffer_size:config.read_buffer_size gluten fd) ]
+        [ (fun () -> io_loop (module Gluten.Client) ~read_buffer_size:config.read_buffer_size gluten tr) ]
     in
     { connection; gluten; io }
+
+  let create_connection ?config fd = create_connection_on ?config (transport_of_fd fd)
 
   let request t = Httpun.Client_connection.request t.connection
   let is_closed t = Gluten.Client.is_closed t.gluten
@@ -156,7 +173,7 @@ module Server = struct
              ?error_handler:(Option.map (fun h -> h peer) error_handler))
         (request_handler peer)
     in
-    io_loop (module Gluten.Server) ~read_buffer_size:config.read_buffer_size connection fd
+    io_loop (module Gluten.Server) ~read_buffer_size:config.read_buffer_size connection (transport_of_fd fd)
 
   let start ?config ?domains ?acceptors ?backlog ?strategy ?error_handler addr request_handler =
     R.Server.start ?domains ?acceptors ?backlog ?strategy addr

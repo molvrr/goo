@@ -25,3 +25,9 @@
  (name test_caqti_goo)
  (modules test_caqti_goo)
  (libraries caqti-goo caqti caqti-driver-postgresql goo unix uri))
+
+; Needs openssl on the PATH (for a local s_server); skipped otherwise.
+(test
+ (name test_tls)
+ (modules test_tls)
+ (libraries web goo unix x509))

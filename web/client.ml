@@ -52,15 +52,26 @@ let with_pool ?max_idle_per_host f =
   let p = create_pool ?max_idle_per_host () in
   Fun.protect ~finally:(fun () -> close_pool p) (fun () -> f p)
 
-let rec checkout pool (ep : Codec.endpoint) =
+let rec checkout ?authenticator pool (ep : Codec.endpoint) =
   let fresh () =
     let fd = Codec.connect ep.addr in
+    (* The handshake runs in the calling task; only the connection's
+       steady-state I/O moves to the pool's keeper. *)
+    let transport =
+      if not ep.secure then HttpunGoo.transport_of_fd fd
+      else
+        match Tls_goo.transport (Tls_goo.client (Tls_goo.config ?authenticator ep.hostname) fd) with
+        | tr -> tr
+        | exception e ->
+            R.close fd;
+            raise (match e with Failure msg -> Error msg | e -> e)
+    in
     let http =
       match pool with
-      | None -> C.create_connection fd
+      | None -> C.create_connection_on transport
       | Some p ->
           let reply = R.Chan.create () in
-          R.Chan.send p.keeper (fun () -> R.Chan.send reply (C.create_connection fd));
+          R.Chan.send p.keeper (fun () -> R.Chan.send reply (C.create_connection_on transport));
           R.Chan.recv reply
     in
     { http; fd; key = ep.key }
@@ -72,7 +83,7 @@ let rec checkout pool (ep : Codec.endpoint) =
       | Some (c :: rest) ->
           Hashtbl.replace p.idle ep.key rest;
           (* The server may have closed it while idle. *)
-          if C.is_closed c.http then (retire c; checkout pool ep) else c
+          if C.is_closed c.http then (retire c; checkout ?authenticator pool ep) else c
       | _ -> fresh ())
   | None -> fresh ()
 
@@ -125,8 +136,8 @@ let body_reader rbody =
       v
     end
 
-let exchange ?pool ?(meth = `GET) ?(headers = []) ?body ?timeout url f =
-  let ep = Codec.endpoint ~schemes:[ "http" ] url in
+let exchange ?pool ?authenticator ?(meth = `GET) ?(headers = []) ?body ?timeout url f =
+  let ep = Codec.endpoint ~schemes:[ "http"; "https" ] url in
   let lower = List.map (fun (k, v) -> (String.lowercase_ascii k, v)) headers in
   let add k v hs = if List.mem_assoc k lower then hs else hs @ [ (k, v) ] in
   let headers =
@@ -141,7 +152,7 @@ let exchange ?pool ?(meth = `GET) ?(headers = []) ?body ?timeout url f =
     |> Codec.check_headers
   in
   with_timeout timeout (fun () ->
-      let c = checkout pool ep in
+      let c = checkout ?authenticator pool ep in
       match
         let result = R.Chan.create () in
         let send v = R.protect (fun () -> R.Chan.send result v) in
@@ -170,10 +181,11 @@ let exchange ?pool ?(meth = `GET) ?(headers = []) ?body ?timeout url f =
           R.protect (fun () -> retire c);
           raise e)
 
-let stream ?pool ?meth ?headers ?body ?timeout url f = exchange ?pool ?meth ?headers ?body ?timeout url f
+let stream ?pool ?authenticator ?meth ?headers ?body ?timeout url f =
+  exchange ?pool ?authenticator ?meth ?headers ?body ?timeout url f
 
-let request ?pool ?meth ?headers ?body ?timeout ?(max_body = 16 lsl 20) url =
-  exchange ?pool ?meth ?headers ?body ?timeout url (fun resp read ->
+let request ?pool ?authenticator ?meth ?headers ?body ?timeout ?(max_body = 16 lsl 20) url =
+  exchange ?pool ?authenticator ?meth ?headers ?body ?timeout url (fun resp read ->
       let b = Buffer.create 1024 in
       let rec go () =
         match read () with
@@ -185,5 +197,7 @@ let request ?pool ?meth ?headers ?body ?timeout ?(max_body = 16 lsl 20) url =
       in
       go ())
 
-let get ?pool ?headers ?timeout url = request ?pool ?headers ?timeout url
-let post ?pool ?headers ?body ?timeout url = request ?pool ~meth:`POST ?headers ?body ?timeout url
+let get ?pool ?authenticator ?headers ?timeout url = request ?pool ?authenticator ?headers ?timeout url
+
+let post ?pool ?authenticator ?headers ?body ?timeout url =
+  request ?pool ?authenticator ~meth:`POST ?headers ?body ?timeout url

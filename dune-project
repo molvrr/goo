@@ -29,7 +29,7 @@
 (package
  (name web)
  (synopsis "HTTP/1.1 and WebSocket server and client on Goo")
- (depends ocaml goo html uri logs base64 digestif angstrom faraday bigstringaf httpun-types))
+ (depends ocaml goo html uri logs base64 digestif angstrom faraday bigstringaf httpun-types tls x509 ca-certs-nss mirage-crypto-rng domain-name ipaddr))
 
 (package
  (name caqti-goo)

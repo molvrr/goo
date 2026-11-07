@@ -1,5 +1,6 @@
 (library
  (name web)
  (public_name web)
- (private_modules codec)
- (libraries goo html httpun httpun-ws gluten bigstringaf faraday logs digestif.ocaml uri))
+ (private_modules codec tls_goo)
+ (libraries goo html httpun httpun-ws gluten bigstringaf faraday logs digestif.ocaml uri
+  tls x509 ca-certs-nss mirage-crypto-rng.unix domain-name ipaddr fmt))
