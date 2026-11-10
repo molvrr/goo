@@ -141,8 +141,22 @@ let tests () =
       log "message still there: %d" (R.Chan.recv c))
 
 let () =
-  R.run_parallel ~domains:2 (fun i -> if i = 0 then tests ());
-  log "run_parallel returned after all work finished";
+  R.run_main ~domains:2 tests;
+  log "run_main returned after all work finished";
+  log "-- run_main returns main's result, and runs main on domain 0 only";
+  let runs = Atomic.make 0 in
+  let v =
+    R.run_main ~domains:3 (fun () ->
+        Atomic.incr runs;
+        let other = R.await_on (R.domains ()).(2) (fun () -> R.index (R.self ())) in
+        (R.index (R.self ()), other))
+  in
+  log "result (%d, %d), main ran %d time(s)%s" (fst v) (snd v) (Atomic.get runs)
+    (if v = (0, 2) && Atomic.get runs = 1 then "" else " (unexpected)");
+  log "-- a failure in run_main's main is re-raised";
+  (match R.run_main ~domains:2 (fun () -> failwith "main boom") with
+   | () -> log "unexpected: returned"
+   | exception Failure m -> log "run_main raised Failure %S" m);
   log "-- a failure in one main cancels the others";
   match
     R.run_parallel ~domains:2 (fun i ->

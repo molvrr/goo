@@ -1195,3 +1195,9 @@ let run_parallel ?domains main =
   Option.iter raise (Atomic.get cl.failure)
 
 let run fn = run_parallel ~domains:1 (fun _ -> fn ())
+
+let run_main ?domains main =
+  let result = ref None in
+  run_parallel ?domains (fun i -> if i = 0 then result := Some (main ()));
+  (* [main] ran on this domain and returned, or [run_parallel] raised. *)
+  match !result with Some v -> v | None -> assert false

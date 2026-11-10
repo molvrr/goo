@@ -5,5 +5,4 @@ let app =
 let () =
   let domains = int_of_string Sys.argv.(1) in
   let addr = Unix.ADDR_INET (Unix.inet_addr_loopback, 3002) in
-  Goo.run_parallel ~domains (fun i ->
-      if i = 0 then Goo.Server.wait (Web.App.serve addr app))
+  Goo.run_main ~domains (fun () -> Goo.Server.wait (Web.App.serve addr app))

@@ -4,10 +4,9 @@
       let handler _peer { Gluten.reqd; _ } =
         Httpun.Reqd.respond_with_string reqd (Httpun.Response.create `OK) "hello"
       in
-      Goo.run_parallel (fun i ->
-          if i = 0 then
-            let server = HttpunGoo.Server.start addr handler in
-            ...)
+      Goo.run_main (fun () ->
+          let server = HttpunGoo.Server.start addr handler in
+          ...)
     ]}
 
     Each connection runs a read task and a write task on the domain that

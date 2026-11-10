@@ -214,16 +214,14 @@ let test_cross_domain () =
 let () =
   (* A deadlock would hang forever; SIGALRM's default action fails the test. *)
   ignore (Unix.alarm 20);
-  R.run_parallel ~domains:2 (fun i ->
-      if i = 0 then begin
-        test_exclusion ();
-        test_fifo ();
-        test_cancel_waiter ();
-        test_cancel_after_handoff ();
-        test_unlock_unlocked ();
-        test_condition ();
-        test_broadcast ();
-        test_condition_cancel ();
-        test_cross_domain ()
-      end);
+  R.run_main ~domains:2 (fun () ->
+      test_exclusion ();
+      test_fifo ();
+      test_cancel_waiter ();
+      test_cancel_after_handoff ();
+      test_unlock_unlocked ();
+      test_condition ();
+      test_broadcast ();
+      test_condition_cancel ();
+      test_cross_domain ());
   if Atomic.get unexpected then exit 1

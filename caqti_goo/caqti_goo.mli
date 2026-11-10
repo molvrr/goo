@@ -54,7 +54,7 @@ val or_fail : ('a, [< Caqti_error.t ]) result -> 'a
     ]}
 
     Each domain's pool lives in a task posted to it, so call {!close} at
-    shutdown: until then [Goo.run_parallel] doesn't return. *)
+    shutdown: until then [Goo.run_parallel] (or [Goo.run_main]) doesn't return. *)
 module Domain_pool : sig
   type t
 

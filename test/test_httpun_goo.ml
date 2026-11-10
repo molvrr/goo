@@ -141,5 +141,5 @@ let tests () =
   R.join streaming
 
 let () =
-  R.run_parallel ~domains:ndomains (fun i -> if i = 0 then tests ());
+  R.run_main ~domains:ndomains tests;
   log "done"

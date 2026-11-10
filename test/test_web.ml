@@ -666,15 +666,13 @@ let served_tests () =
 let () =
   Logs.set_reporter (Logs.format_reporter ());
   Logs.set_level (Some Logs.Error);
-  R.run_parallel ~domains:2 (fun i ->
-      if i = 0 then begin
-        unit_tests ();
-        router_tests ();
-        bench ();
-        served_tests ();
-        websocket_tests ();
-        client_tests ();
-        ws_route_tests ()
-      end);
+  R.run_main ~domains:2 (fun () ->
+      unit_tests ();
+      router_tests ();
+      bench ();
+      served_tests ();
+      websocket_tests ();
+      client_tests ();
+      ws_route_tests ());
   Printf.printf "\n%d failure(s)\n" !failures;
   exit (if !failures = 0 then 0 else 1)

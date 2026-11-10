@@ -180,7 +180,7 @@ let () =
     ignore (Unix.alarm 60);
     let uri, stop = start_postgres () in
     Fun.protect ~finally:stop (fun () ->
-        try R.run_parallel ~domains:2 (fun i -> if i = 0 then tests uri)
+        try R.run_main ~domains:2 (fun () -> tests uri)
         with e -> log "failed: %s (unexpected)" (Printexc.to_string e));
     if Atomic.get unexpected then exit 1
   end

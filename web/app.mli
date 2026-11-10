@@ -6,8 +6,7 @@
         |> Web.App.route Web.Route.(get (s "users" / int /? nil @-> fun _req id -> ...))
         |> Web.App.use logger
       in
-      Goo.run_parallel (fun i ->
-          if i = 0 then ignore (Web.App.serve addr app))
+      Goo.run_main (fun () -> Goo.Server.wait (Web.App.serve addr app))
     ]} *)
 
 type handler = Request.t -> Response.t

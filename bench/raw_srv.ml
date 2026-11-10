@@ -23,5 +23,4 @@ let handler fd _peer =
 let () =
   let domains = int_of_string Sys.argv.(1) in
   let addr = Unix.ADDR_INET (Unix.inet_addr_loopback, 3003) in
-  Goo.run_parallel ~domains (fun i ->
-      if i = 0 then Goo.Server.wait (Goo.Server.start addr handler))
+  Goo.run_main ~domains (fun () -> Goo.Server.wait (Goo.Server.start addr handler))

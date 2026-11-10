@@ -32,6 +32,17 @@ val run_parallel : ?domains:int -> (int -> unit) -> unit
     {!await_on} and {!Chan}; {!cancel}, {!kill} and {!join} also work on
     scopes owned by other domains. *)
 
+val run_main : ?domains:int -> (unit -> 'a) -> 'a
+(** [run_main ~domains:n main] starts [n] schedulers like {!run_parallel}
+    and runs [main ()] on the first (the calling domain) only. The others
+    run what is {!post}ed or {!await_on}ed to them, e.g. the connections of
+    a {!Server} spread over {!domains}. Returns [main]'s result once all
+    work has finished; a failure anywhere is re-raised.
+
+    {[
+      Goo.run_main (fun () -> Goo.Server.wait (Web.App.serve addr app))
+    ]} *)
+
 (** {1 Domains} *)
 
 type domain

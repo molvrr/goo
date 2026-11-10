@@ -119,16 +119,14 @@ let test_bind_failure () =
 
 let () =
   Printf.printf "platform: %s, %d domains\n%!" Platform.system ndomains;
-  R.run_parallel ~domains:ndomains (fun i ->
-      if i = 0 then begin
-        test_load `Auto "auto";
-        test_load `Shared "shared";
-        test_load `Reuseport "reuseport";
-        test_graceful ();
-        test_timeout ();
-        test_handler_failure ();
-        test_bind_failure ()
-      end);
+  R.run_main ~domains:ndomains (fun () ->
+      test_load `Auto "auto";
+      test_load `Shared "shared";
+      test_load `Reuseport "reuseport";
+      test_graceful ();
+      test_timeout ();
+      test_handler_failure ();
+      test_bind_failure ());
   log "run_parallel returned"
 
 let () = if Atomic.get unexpected then exit 1
