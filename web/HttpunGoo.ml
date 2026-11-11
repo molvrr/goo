@@ -176,6 +176,6 @@ module Server = struct
     io_loop (module Gluten.Server) ~read_buffer_size:config.read_buffer_size connection (transport_of_fd fd)
 
   let start ?config ?domains ?acceptors ?backlog ?strategy ?error_handler addr request_handler =
-    R.Server.start ?domains ?acceptors ?backlog ?strategy addr
+    Goo_server.start ?domains ?acceptors ?backlog ?strategy addr
       (create_connection_handler ?config ?error_handler ~request_handler)
 end

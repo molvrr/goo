@@ -1,0 +1,15 @@
+(library
+ (name goo_server)
+ (public_name goo-server)
+ (wrapped false)
+ (libraries goo unix))
+
+; Platform facts known at build time (the target system when cross-compiling).
+(rule
+ (targets platform.ml)
+ (action
+  (with-stdout-to
+   platform.ml
+   (progn
+    (echo "let system = \"%{ocaml-config:system}\"\n")
+    (echo "let reuseport_balances = String.equal system \"linux\"\n")))))

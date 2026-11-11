@@ -110,7 +110,7 @@ let url addr path =
 
 let tests () =
   let server = H.Server.start (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) handler in
-  let addr = R.Server.addr server in
+  let addr = Goo_server.addr server in
   let u = url addr in
   log "GET /            -> %S" (curl [ u "/" ]);
   log "keep-alive x2    -> %S" (curl [ u "/"; u "/" ]);
@@ -136,7 +136,7 @@ let tests () =
   let streaming = R.scope [ (fun () -> ignore (curl [ u "/forever" ])) ] in
   R.sleep 0.05;
   let t = Unix.gettimeofday () in
-  R.Server.shutdown ~timeout:0.05 server;
+  Goo_server.shutdown ~timeout:0.05 server;
   log "shutdown with an open stream took %.0fms" ((Unix.gettimeofday () -. t) *. 1000.);
   R.join streaming
 

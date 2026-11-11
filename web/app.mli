@@ -6,7 +6,7 @@
         |> Web.App.route Web.Route.(get (s "users" / int /? nil @-> fun _req id -> ...))
         |> Web.App.use logger
       in
-      Goo.run_main (fun () -> Goo.Server.wait (Web.App.serve addr app))
+      Goo.run_main (fun () -> Goo_server.wait (Web.App.serve addr app))
     ]} *)
 
 type handler = Request.t -> Response.t
@@ -46,8 +46,8 @@ val serve :
   ?strategy:[ `Auto | `Reuseport | `Shared ] ->
   Unix.sockaddr ->
   t ->
-  Goo.Server.t
-(** Serve over HTTP/1.1 on {!Goo.Server}. Each request runs in its own
+  Goo_server.t
+(** Serve over HTTP/1.1 on {!Goo_server}. Each request runs in its own
     task on the domain that accepted the connection, so handlers can block;
     the task belongs to the connection and is cancelled with it. *)
 

@@ -36,11 +36,11 @@ val run_main : ?domains:int -> (unit -> 'a) -> 'a
 (** [run_main ~domains:n main] starts [n] schedulers like {!run_parallel}
     and runs [main ()] on the first (the calling domain) only. The others
     run what is {!post}ed or {!await_on}ed to them, e.g. the connections of
-    a {!Server} spread over {!domains}. Returns [main]'s result once all
+    a [Goo_server] spread over {!domains}. Returns [main]'s result once all
     work has finished; a failure anywhere is re-raised.
 
     {[
-      Goo.run_main (fun () -> Goo.Server.wait (Web.App.serve addr app))
+      Goo.run_main (fun () -> Goo_server.wait (Web.App.serve addr app))
     ]} *)
 
 (** {1 Domains} *)
@@ -68,6 +68,12 @@ val spawn : (unit -> unit) -> unit
 
 val yield : unit -> unit
 (** Let other tasks run. A cancellation point. *)
+
+val check : unit -> unit
+(** A cancellation point that doesn't yield: raises {!Cancelled} if the
+    current task's scope has been cancelled (outside {!protect}), and
+    returns at once otherwise. For deciding not to start something, e.g. a
+    server not spawning a connection it just accepted. *)
 
 val sleep : float -> unit
 (** Block for the given number of seconds. *)
@@ -257,55 +263,6 @@ module Condition : sig
 
   val broadcast : t -> unit
   (** Wake every waiting task. Never blocks. *)
-end
-
-(** {1 Servers} *)
-
-(** TCP servers accepting on several domains.
-
-    {[
-      let server = Goo.Server.start addr (fun fd _peer -> echo fd) in
-      ...
-      Goo.Server.shutdown ~timeout:5. server
-    ]} *)
-module Server : sig
-  type t
-
-  val start :
-    ?domains:domain array ->
-    ?acceptors:int ->
-    ?backlog:int ->
-    ?strategy:[ `Auto | `Reuseport | `Shared ] ->
-    Unix.sockaddr ->
-    (Unix.file_descr -> Unix.sockaddr -> unit) ->
-    t
-  (** Listen on the address and accept on every given domain (default: all),
-      with [acceptors] accept loops per domain (default 1). Returns once every
-      domain is listening.
-
-      Each connection runs [handler fd peer] as its own task on the domain
-      that accepted it; [fd] is non-blocking and is closed by the runtime
-      when the handler ends, so don't close it yourself (use
-      [Unix.shutdown] to end it early). A handler exception is logged and
-      only affects its own connection.
-
-      [strategy]: [`Reuseport] gives each domain its own [SO_REUSEPORT]
-      socket so the kernel spreads connections (balanced on Linux only);
-      [`Shared] has all domains accept on one socket (every domain wakes per
-      connection, but idle domains naturally take more). [`Auto] (default)
-      picks [`Reuseport] when {!Platform.reuseport_balances}.
-      @raise Unix.Unix_error if binding fails on any domain. *)
-
-  val addr : t -> Unix.sockaddr
-  (** The bound address (with the actual port when binding port 0). *)
-
-  val shutdown : ?timeout:float -> t -> unit
-  (** Stop accepting on every domain, close the listening sockets, then wait
-      for open connections to finish. With [timeout], connections still open
-      after that many seconds are cancelled. Calling it again just waits. *)
-
-  val wait : t -> unit
-  (** Wait until the server has been shut down and all connections ended. *)
 end
 
 (** {1 Fan-out}

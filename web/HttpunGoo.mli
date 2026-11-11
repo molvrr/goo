@@ -79,7 +79,7 @@ module Server : sig
     Unix.sockaddr ->
     unit
   (** Serve one connection until it closes; suitable for
-      {!Goo.Server.start}. Defaults to httpun's error handler. *)
+      {!Goo_server.start}. Defaults to httpun's error handler. *)
 
   val start :
     ?config:Httpun.Config.t ->
@@ -90,6 +90,6 @@ module Server : sig
     ?error_handler:error_handler ->
     Unix.sockaddr ->
     request_handler ->
-    Goo.Server.t
-  (** {!Goo.Server.start} with {!create_connection_handler}. *)
+    Goo_server.t
+  (** {!Goo_server.start} with {!create_connection_handler}. *)
 end

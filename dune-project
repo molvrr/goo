@@ -12,6 +12,11 @@
  (depends ocaml))
 
 (package
+ (name goo-server)
+ (synopsis "TCP servers accepting on several Goo domains")
+ (depends ocaml goo))
+
+(package
  (name html)
  (synopsis "Typed HTML and CSS builders")
  (depends ocaml))
@@ -29,7 +34,7 @@
 (package
  (name web)
  (synopsis "HTTP/1.1 and WebSocket server and client on Goo")
- (depends ocaml goo html uri logs base64 digestif angstrom faraday bigstringaf httpun-types tls x509 ca-certs-nss mirage-crypto-rng domain-name ipaddr))
+ (depends ocaml goo goo-server html uri logs base64 digestif angstrom faraday bigstringaf httpun-types tls x509 ca-certs-nss mirage-crypto-rng domain-name ipaddr))
 
 (package
  (name caqti-goo)

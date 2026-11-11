@@ -4,7 +4,8 @@ A dune workspace of OCaml libraries for web apps on Goo, with no Eio.
 
 | Package | Library | What |
 |---|---|---|
-| `goo` | `goo` | Cooperative, multi-domain scheduler built on effects: tasks, scopes and cancellation, sockets, channels, mutexes/conditions, a TCP server |
+| `goo` | `goo` | Cooperative, multi-domain scheduler built on effects: tasks, scopes and cancellation, sockets, channels, mutexes/conditions |
+| `goo-server` | `goo-server` | TCP servers accepting on several Goo domains (`Goo_server`), built on Goo's public API |
 | `html` | `html` | Typed HTML (`Html`) and CSS (`Css`) builders |
 | `csp` | `csp` | Typed Content-Security-Policy headers |
 | `datastar` | `datastar` | Datastar attributes, action expressions and SSE events |
@@ -22,4 +23,4 @@ dune test
 ```
 
 `bench/` has two servers for wrk: `runtime_srv` (Web) and `raw_srv` (bare
-`Goo.Server`).
+`Goo_server`).

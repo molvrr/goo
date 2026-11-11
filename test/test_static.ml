@@ -122,7 +122,7 @@ let () =
       print_endline "-- on the wire (curl)";
       if Sys.command "command -v curl >/dev/null" = 0 then begin
         let server = App.serve (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) app in
-        let port = match Goo.Server.addr server with Unix.ADDR_INET (_, p) -> p | _ -> assert false in
+        let port = match Goo_server.addr server with Unix.ADDR_INET (_, p) -> p | _ -> assert false in
         let curl args =
           (* The server runs on this domain: read curl's output through Goo
              rather than blocking on it. *)
@@ -156,7 +156,7 @@ let () =
           (String.ends_with ~suffix:(String.init 300_000 (fun i -> Char.chr (i mod 251))) big);
         let rg = curl [ "-H"; "range: bytes=2-4"; url "/assets/digits.txt" ] in
         check "206 body" (has rg "206" && String.ends_with ~suffix:"\r\n\r\n234" rg);
-        Goo.Server.shutdown server
+        Goo_server.shutdown server
       end
       else print_endline "curl not found: skipped");
   Printf.printf "\n%d failure(s)\n" !failures;

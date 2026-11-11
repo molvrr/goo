@@ -1,5 +1,5 @@
 module R = Goo
-module S = R.Server
+module S = Goo_server
 
 let t0 = Unix.gettimeofday ()
 let log_line fmt =
@@ -118,7 +118,8 @@ let test_bind_failure () =
   S.shutdown a
 
 let () =
-  Printf.printf "platform: %s, %d domains\n%!" Platform.system ndomains;
+  Printf.printf "platform: %s (SO_REUSEPORT balances: %b), %d domains\n%!" Platform.system
+    Platform.reuseport_balances ndomains;
   R.run_main ~domains:ndomains (fun () ->
       test_load `Auto "auto";
       test_load `Shared "shared";

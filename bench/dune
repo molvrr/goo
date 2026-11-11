@@ -1,4 +1,4 @@
-; wrk targets: Web on Goo, and a raw Goo.Server responder.
+; wrk targets: Web on Goo, and a raw Goo_server responder.
 (executables
  (names runtime_srv raw_srv)
- (libraries goo web unix))
+ (libraries goo goo-server web unix))

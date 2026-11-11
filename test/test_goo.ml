@@ -25,6 +25,37 @@ let sleeper name () =
       R.sleep 3600.;
       log "%s: woke (unexpected)" name)
 
+let test_check () =
+  log "-- check: returns at once when not cancelled, without yielding";
+  let other_ran = ref false in
+  R.scoped
+    [
+      (fun () ->
+        R.check ();
+        log "check returned; the other task ran meanwhile: %b%s" !other_ran
+          (if !other_ran then " (unexpected)" else ""));
+      (fun () -> other_ran := true);
+    ];
+  log "-- check: raises Cancelled once the scope is cancelled";
+  let entered = R.Chan.create () in
+  let s =
+    R.scope
+      [
+        (fun () ->
+          R.protect (fun () ->
+              R.Chan.send entered ();
+              R.sleep 0.05);
+          match R.check () with
+          | () -> log "check returned in a cancelled scope (unexpected)"
+          | exception R.Cancelled ->
+              log "check raised Cancelled";
+              raise R.Cancelled);
+      ]
+  in
+  R.Chan.recv entered;
+  R.cancel s;
+  R.join s
+
 (* Background work started from a request belongs to a long-lived scope: the
    request doesn't wait for it and cancelling the request doesn't reach it. *)
 let test_spawn_in () =
@@ -288,12 +319,11 @@ let main () =
   test_scoped ();
   test_server ();
   test_spawn_in ();
+  test_check ();
   log "-- a failure in the root scope is raised from run";
   R.spawn (fun () -> failwith "root boom")
 
 let () =
-  Printf.printf "platform: %s (SO_REUSEPORT balances: %b)\n%!" Platform.system
-    Platform.reuseport_balances;
   match R.run main with
   | () -> log "run returned (unexpected)"
   | exception Failure msg -> log "run raised Failure %S" msg

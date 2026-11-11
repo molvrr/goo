@@ -5,4 +5,4 @@ let app =
 let () =
   let domains = int_of_string Sys.argv.(1) in
   let addr = Unix.ADDR_INET (Unix.inet_addr_loopback, 3002) in
-  Goo.run_main ~domains (fun () -> Goo.Server.wait (Web.App.serve addr app))
+  Goo.run_main ~domains (fun () -> Goo_server.wait (Web.App.serve addr app))

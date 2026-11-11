@@ -1,4 +1,4 @@
-(* Minimal keep-alive HTTP responder straight on Goo.Server: no httpun. *)
+(* Minimal keep-alive HTTP responder straight on Goo_server: no httpun. *)
 let resp = "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello"
 
 let handler fd _peer =
@@ -23,4 +23,4 @@ let handler fd _peer =
 let () =
   let domains = int_of_string Sys.argv.(1) in
   let addr = Unix.ADDR_INET (Unix.inet_addr_loopback, 3003) in
-  Goo.run_main ~domains (fun () -> Goo.Server.wait (Goo.Server.start addr handler))
+  Goo.run_main ~domains (fun () -> Goo_server.wait (Goo_server.start addr handler))

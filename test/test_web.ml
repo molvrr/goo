@@ -437,7 +437,7 @@ let websocket_tests () =
            ]
   in
   let server = App.serve (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) app in
-  let addr = R.Server.addr server in
+  let addr = Goo_server.addr server in
   let c, resp = Ws_client.handshake addr in
   check "101 with the RFC 6455 accept key"
     (String.starts_with ~prefix:"HTTP/1.1 101" resp
@@ -480,7 +480,7 @@ let websocket_tests () =
 
   let plain = curl_raw addr "/ws" in
   check "plain GET on a websocket route -> 400" (String.starts_with ~prefix:"HTTP/1.1 400" plain);
-  R.Server.shutdown ~timeout:1. server
+  Goo_server.shutdown ~timeout:1. server
 
 let client_tests () =
   print_endline "-- client";
@@ -514,7 +514,7 @@ let client_tests () =
   in
   let server = App.serve (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) app in
   let base =
-    match R.Server.addr server with
+    match Goo_server.addr server with
     | Unix.ADDR_INET (_, p) -> Printf.sprintf "http://127.0.0.1:%d" p
     | _ -> assert false
   in
@@ -562,7 +562,7 @@ let client_tests () =
   (match Websocket.connect (base ^ "/users/1") (fun _ -> ()) with
   | () -> check "websocket handshake failure" false
   | exception Failure m -> check ("websocket handshake failure: " ^ m) true);
-  R.Server.shutdown ~timeout:1. server
+  Goo_server.shutdown ~timeout:1. server
 
 let ws_route_tests () =
   print_endline "-- ws routes";
@@ -601,7 +601,7 @@ let ws_route_tests () =
     (status (go ~headers:[ ("upgrade", "websocket") ] "/chat") = 400);
   let server = App.serve (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) app in
   let base =
-    match R.Server.addr server with
+    match Goo_server.addr server with
     | Unix.ADDR_INET (_, p) -> Printf.sprintf "ws://127.0.0.1:%d" p
     | _ -> assert false
   in
@@ -620,7 +620,7 @@ let ws_route_tests () =
   check "query param reaches the session" (greet = Some (`Text "hi bo") && echoed = Some (`Text "bo: yo"));
   check "same URL serves the page over HTTP"
     (Client.body (Client.get ("http" ^ String.sub base 2 (String.length base - 2) ^ "/room/lobby")) = "page for lobby");
-  R.Server.shutdown ~timeout:1. server
+  Goo_server.shutdown ~timeout:1. server
 
 (* curl on a separate domain, since it blocks. *)
 let curl args =
@@ -642,7 +642,7 @@ let served_tests () =
   let _, app = app in
   let server = App.serve (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) app in
   let base =
-    match R.Server.addr server with
+    match Goo_server.addr server with
     | Unix.ADDR_INET (_, p) -> Printf.sprintf "http://127.0.0.1:%d" p
     | _ -> assert false
   in
@@ -661,7 +661,7 @@ let served_tests () =
   let out = curl [ "--max-time"; "0.2"; base ^ "/forever" ] in
   check "sse until client leaves" (String.starts_with ~prefix:"data: first\n\n: ping" out);
   R.sleep 0.2;
-  R.Server.shutdown ~timeout:1. server
+  Goo_server.shutdown ~timeout:1. server
 
 let () =
   Logs.set_reporter (Logs.format_reporter ());

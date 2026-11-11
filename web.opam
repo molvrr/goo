@@ -6,6 +6,7 @@ depends: [
   "dune" {>= "3.26"}
   "ocaml"
   "goo"
+  "goo-server"
   "html"
   "uri"
   "logs"
