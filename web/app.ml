@@ -6,14 +6,19 @@ type handler = Request.t -> Response.t
 type middleware = handler -> handler
 type t = {
   routes : unit Route.route list;
-  router : Router.t Lazy.t;  (* rebuilt when routes change *)
+  router : Router.t;
+      (* Built with the app, not on first use: the app is shared by every
+         domain serving it, and its first requests may arrive on several at
+         once. Read-only once built. *)
   middleware : middleware list;
   not_found : handler;
 }
 
 let default_not_found _ = Response.text ~status:`Not_found "Not Found"
-let with_routes routes t = { t with routes; router = lazy (Router.create routes) }
-let create () = { routes = []; router = lazy (Router.create []); middleware = []; not_found = default_not_found }
+(* Rebuilt from scratch: apps are values, and the previous one keeps its
+   own router. *)
+let with_routes routes t = { t with routes; router = Router.create routes }
+let create () = { routes = []; router = Router.create []; middleware = []; not_found = default_not_found }
 let route r t = with_routes (t.routes @ [ r ]) t
 let routes rs t = with_routes (t.routes @ rs) t
 let use m t = { t with middleware = t.middleware @ [ m ] }
@@ -21,7 +26,7 @@ let not_found h t = { t with not_found = h }
 let describe t = List.map Route.route_pattern t.routes
 
 let dispatch t req =
-  match Router.lookup (Lazy.force t.router) req with
+  match Router.lookup t.router req with
   | Found run -> run ()
   | Bad_query msg -> Response.text ~status:`Bad_request msg
   | Upgrade_required ->

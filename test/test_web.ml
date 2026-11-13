@@ -637,6 +637,35 @@ let curl args =
   Domain.join d;
   o
 
+(* An app is shared by every domain serving it: its first requests may
+   arrive on several at once. *)
+let concurrent_tests () =
+  print_endline "-- first requests from every domain at once";
+  let app =
+    App.create ()
+    |> App.routes (List.init 20000 (fun i -> Route.(get (s "r" / s (string_of_int i) /? nil @-> fun _ -> Response.text "r"))))
+  in
+  let ok = Atomic.make 0 and failed = Atomic.make 0 and arrived = Atomic.make 0 in
+  let per_domain = 20 and n = Array.length (R.domains ()) in
+  R.scoped
+    (Array.to_list
+       (Array.map
+          (fun d () ->
+            R.await_on d (fun () ->
+                (* Start together; yield, since one of them is this domain. *)
+                Atomic.incr arrived;
+                while Atomic.get arrived < n do R.yield () done;
+                for i = 1 to per_domain do
+                  match body (App.handle app (Request.make (Printf.sprintf "/r/%d" i))) with
+                  | "r" -> Atomic.incr ok
+                  | _ -> Atomic.incr failed
+                  | exception _ -> Atomic.incr failed
+                done))
+          (R.domains ())));
+  let total = per_domain * n in
+  check (Printf.sprintf "%d requests from %d domains, all answered" total n)
+    (Atomic.get ok = total && Atomic.get failed = 0)
+
 let served_tests () =
   print_endline "-- served over HTTP (curl)";
   let _, app = app in
@@ -666,10 +695,11 @@ let served_tests () =
 let () =
   Logs.set_reporter (Logs.format_reporter ());
   Logs.set_level (Some Logs.Error);
-  R.run_main ~domains:2 (fun () ->
+  R.run_main ~domains:4 (fun () ->
       unit_tests ();
       router_tests ();
       bench ();
+      concurrent_tests ();
       served_tests ();
       websocket_tests ();
       client_tests ();
