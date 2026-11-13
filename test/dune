@@ -26,6 +26,12 @@
  (modules test_caqti_goo)
  (libraries caqti-goo caqti caqti-driver-postgresql goo unix uri))
 
+; Needs initdb and postgres on the PATH (the dev shell has them); skipped otherwise.
+(test
+ (name test_live)
+ (modules test_live)
+ (libraries live caqti-goo caqti caqti-driver-postgresql goo web html httpun unix uri logs logs.fmt))
+
 ; Needs openssl on the PATH (for a local s_server); skipped otherwise.
 (test
  (name test_tls)

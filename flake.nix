@@ -36,9 +36,11 @@
           mtime
           ipaddr
           domain-name
+          # live
+          postgresql
         ];
 
-      packageNames = ["goo" "goo-server" "html" "csp" "datastar" "web" "caqti-goo"];
+      packageNames = ["goo" "goo-server" "html" "csp" "datastar" "web" "caqti-goo" "live"];
       # Always built (dune never masks vendored packages); installed alongside
       # [web], which is compiled against them.
       vendoredNames = ["httpun" "httpun-ws" "gluten"];

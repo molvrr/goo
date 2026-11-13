@@ -1,0 +1,4 @@
+(library
+ (name live)
+ (public_name live)
+ (libraries goo web html datastar datastar.web caqti caqti-goo postgresql yojson logs uri unix))

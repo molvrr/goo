@@ -40,3 +40,8 @@
  (name caqti-goo)
  (synopsis "Caqti on Goo (Postgres)")
  (depends ocaml goo caqti caqti-driver-postgresql mtime ipaddr domain-name uri logs))
+
+(package
+ (name live)
+ (synopsis "Live pages: re-rendered with Datastar when the Postgres tables they read change")
+ (depends ocaml goo web html datastar caqti caqti-goo postgresql yojson logs uri))

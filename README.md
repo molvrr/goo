@@ -12,6 +12,7 @@ A dune workspace of OCaml libraries for web apps on Goo, with no Eio.
 | | `datastar.web` | Datastar requests and SSE responses on `web` |
 | `web` | `web` | HTTP/1.1 + WebSocket server and client on Goo (httpun), routes, responses, static files |
 | `caqti-goo` | `caqti-goo` | Caqti on Goo, Postgres only, with per-domain pools |
+| `live` | `live` | Live pages: re-rendered with Datastar when the Postgres tables they read change (triggers installed from code, polling for tables written too often) |
 
 `vendor/` holds patched httpun-ws and the httpun / gluten it builds against
 (see `vendor/README.md`).
