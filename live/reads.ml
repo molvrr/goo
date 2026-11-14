@@ -1,53 +1,53 @@
-(* Which tables a piece of code reads, from Postgres' own per-transaction
-   counters of table scans (pg_stat_xact_user_tables): [track] runs [f] in a
-   transaction between two snapshots of the counters, and the tables whose
-   counts went up are the ones it read. Views, joins, subqueries and SQL
-   functions are all seen through, since the counters are the tables'.
+(* Which tables a piece of code reads: [track] runs [f] in a transaction
+   and, before committing, asks Postgres which relations the transaction
+   holds locks on (pg_locks). Every table a query uses is locked until the
+   end of the transaction, so views, joins, subqueries, SQL functions and
+   partitions are all seen (partitions as their root table, the one
+   triggers and pages name).
 
-   The counters only move inside the transaction (Postgres flushes them
-   when the session goes idle), so the difference is [f]'s alone. They need
-   track_counts, which is on by default. A scan that finds nothing still
-   counts.
+   It errs on the side of more: a table a query names but never reaches
+   (a branch not taken, an EXISTS not evaluated) is locked all the same.
+   That's safe for live pages: at worst an extra render.
 
-   Partitions count as their root table (the one triggers and pages name),
-   since a query through the parent scans the partitions.
+   Three round trips besides [f]'s queries: BEGIN, the locks, COMMIT.
 
-   The transaction is READ ONLY by default: a render that writes would wake
-   itself forever, so it fails instead. *)
+   Writes show as stronger locks: unless [~writes:true], a transaction that
+   wrote is rolled back and [Wrote] raised, since a render that writes
+   would wake itself forever. *)
 
 open Caqti_request.Infix
 
-let counters =
-  Caqti_type.(unit ->* t2 string int)
-    {|SELECT n.nspname || '.' || c.relname, sum(coalesce(s.seq_scan, 0) + coalesce(s.idx_scan, 0))::bigint
-      FROM pg_stat_xact_user_tables s
-      JOIN pg_class c ON c.oid = coalesce(pg_partition_root(s.relid), s.relid)
+exception Wrote of string list
+
+let locks =
+  Caqti_type.(unit ->* t2 string bool)
+    {|SELECT DISTINCT n.nspname || '.' || c.relname, l.mode NOT IN ('AccessShareLock', 'RowShareLock')
+      FROM pg_locks l
+      JOIN pg_class c0 ON c0.oid = l.relation
+      JOIN pg_class c ON c.oid = coalesce(pg_partition_root(c0.oid), c0.oid)
       JOIN pg_namespace n ON n.oid = c.relnamespace
-      GROUP BY 1|}
-;;
-
-let read_only = Caqti_type.(unit ->. unit) "SET TRANSACTION READ ONLY"
-
-let read ~before ~after =
-  List.filter_map
-    (fun (table, n) -> if n > Option.value (List.assoc_opt table before) ~default:0 then Some table else None)
-    after
-  |> List.sort_uniq String.compare
+      WHERE l.pid = pg_backend_pid() AND l.locktype = 'relation' AND l.granted
+        AND c0.relkind IN ('r', 'p') AND n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'|}
 ;;
 
 let track ?(writes = false) ((module C : Caqti_goo.CONNECTION) as conn) f =
   let ( let* ) = Result.bind in
   let* () = C.start () in
   match
-    let* () = if writes then Ok () else C.exec read_only () in
-    let* before = C.collect_list counters () in
     let* v = f conn in
-    let* after = C.collect_list counters () in
-    Ok (v, read ~before ~after)
+    let* held = C.collect_list locks () in
+    Ok (v, held)
   with
-  | Ok r ->
-    let* () = C.commit () in
-    Ok r
+  | Ok (v, held) ->
+    let tables = List.sort_uniq String.compare (List.map fst held) in
+    let wrote = List.sort_uniq String.compare (List.filter_map (fun (t, w) -> if w then Some t else None) held) in
+    if wrote <> [] && not writes then begin
+      ignore (C.rollback ());
+      raise (Wrote wrote)
+    end
+    else
+      let* () = C.commit () in
+      Ok (v, tables)
   | Error _ as e ->
     ignore (C.rollback ());
     e

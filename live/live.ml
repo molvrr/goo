@@ -32,13 +32,14 @@ type t =
   ; burst_window: float
   ; calm_window: float
   ; on_unwatched: [ `Fail | `Warn | `Ignore ]
+  ; check_tables: bool (* pages with ~tables are still tracked, to check them *)
   ; warned: (string, unit) Hashtbl.t (* path|table, warned once *)
   ; connected: bool Atomic.t
   ; mutable scope: Goo.scope option
   }
 
 let create ?(max_writes_per_s = 20.) ?(poll_every = 1.) ?(burst_window = 60.) ?(calm_window = 600.)
-    ?(on_unwatched = `Warn) ~db ~url tables =
+    ?(on_unwatched = `Warn) ?(check_tables = false) ~db ~url tables =
   let now = Unix.gettimeofday () in
   let entries =
     List.map
@@ -48,7 +49,7 @@ let create ?(max_writes_per_s = 20.) ?(poll_every = 1.) ?(burst_window = 60.) ?(
       tables
   in
   { db; url = Uri.to_string url; changes = Changes.create (); lock = Mutex.create (); entries; max_writes_per_s; poll_every;
-    burst_window; calm_window; on_unwatched; warned = Hashtbl.create 16; connected = Atomic.make false; scope = None }
+    burst_window; calm_window; on_unwatched; check_tables; warned = Hashtbl.create 16; connected = Atomic.make false; scope = None }
 ;;
 
 let locked t f = Mutex.protect t.lock f
@@ -192,43 +193,84 @@ let short name =
   if String.starts_with ~prefix:p name then String.sub name (String.length p) (String.length name - String.length p) else name
 ;;
 
-(* What to do about a render that read tables the app didn't declare. *)
+(* A page that may miss changes: per [on_unwatched], an error, a warning
+   (once per page and message) or nothing. *)
+let report t req msg =
+  match t.on_unwatched with
+  | `Ignore -> Ok ()
+  | `Fail -> Error msg
+  | `Warn ->
+    let fresh =
+      locked t (fun () ->
+        let k = Web.Request.path req ^ "|" ^ msg in
+        let fresh = not (Hashtbl.mem t.warned k) in
+        Hashtbl.replace t.warned k ();
+        fresh)
+    in
+    if fresh then Log.warn (fun m -> m "%s" msg);
+    Ok ()
+;;
+
+let tables_hint tables = String.concat ", " (List.map (fun tb -> Printf.sprintf "Live.table %S" (short tb)) tables)
+
+(* Tables a page reads that the app didn't give Live.create. *)
 let check_reads t req tables =
   match List.filter (fun tb -> not (watched t tb)) tables with
   | [] -> Ok ()
   | missing ->
-    let path = Web.Request.path req in
-    let msg =
-      Printf.sprintf "%s reads %s, which live pages don't watch: add %s to the tables given to Live.create" path
-        (String.concat ", " missing)
-        (String.concat ", " (List.map (fun tb -> Printf.sprintf "Live.table %S" (short tb)) missing))
+    report t req
+      (Printf.sprintf "%s reads %s, which live pages don't watch: add %s to the tables given to Live.create"
+         (Web.Request.path req) (String.concat ", " missing) (tables_hint missing))
+;;
+
+(* Tables a page with [~tables] read but didn't list. *)
+let check_declared t req ~declared read =
+  match List.filter (fun tb -> not (List.mem tb declared)) read with
+  | [] -> Ok ()
+  | missing ->
+    report t req
+      (Printf.sprintf "%s reads %s, missing from its ~tables: it wouldn't update when they change"
+         (Web.Request.path req) (String.concat ", " missing))
+;;
+
+let ( let* ) = Result.bind
+
+(* One render: the children and the tables to watch. Tracked (see Reads)
+   unless the page lists its tables, and then only to check them when
+   [check_tables]. *)
+let render t ~show_error ?tables ~data req =
+  let tracked () =
+    match DP.use t.db (fun conn -> Ok (Reads.track conn (data req))) with
+    | exception Reads.Wrote ts ->
+      Error (`Data ("the render wrote to " ^ String.concat ", " ts ^ " (rolled back): renders must only read"))
+    | Ok (Ok r) -> Ok r
+    | Ok (Error e) -> Error (`Data (show_error e))
+    | Error e -> Error (`Data (Caqti_error.show e))
+  in
+  let unwatched = Result.map_error (fun m -> `Unwatched m) in
+  match tables with
+  | None ->
+    let* children, read = tracked () in
+    let* () = unwatched (check_reads t req read) in
+    Ok (children, read)
+  | Some declared ->
+    let declared = List.sort_uniq String.compare (List.map Table.qualify declared) in
+    let* children =
+      if t.check_tables then
+        let* children, read = tracked () in
+        let* () = unwatched (check_declared t req ~declared read) in
+        Ok children
+      else
+        match DP.use t.db (fun conn -> Ok (data req conn)) with
+        | Ok (Ok children) -> Ok children
+        | Ok (Error e) -> Error (`Data (show_error e))
+        | Error e -> Error (`Data (Caqti_error.show e))
     in
-    (match t.on_unwatched with
-     | `Ignore -> Ok ()
-     | `Fail -> Error msg
-     | `Warn ->
-       let fresh =
-         locked t (fun () ->
-           let k = path ^ "|" ^ String.concat "," missing in
-           let fresh = not (Hashtbl.mem t.warned k) in
-           Hashtbl.replace t.warned k ();
-           fresh)
-       in
-       if fresh then Log.warn (fun m -> m "%s" msg);
-       Ok ())
+    let* () = unwatched (check_reads t req declared) in
+    Ok (children, declared)
 ;;
 
-let render t ~show_error ~data req =
-  match DP.use t.db (fun conn -> Ok (Reads.track conn (data req))) with
-  | Ok (Ok (children, tables)) ->
-    (match check_reads t req tables with
-     | Ok () -> Ok (children, tables)
-     | Error m -> Error (`Unwatched m))
-  | Ok (Error e) -> Error (`Data (show_error e))
-  | Error e -> Error (`Data (Caqti_error.show e))
-;;
-
-let stream t ?(settle = 0.05) ?every ?(also = []) ?(keys = []) ?(show_error = default_show) ~id ~data req send =
+let stream t ?(settle = 0.05) ?every ?(also = []) ?(keys = []) ?tables ?(show_error = default_show) ~id ~data req send =
   let sub = Changes.subscribe t.changes in
   Goo.defer (fun () -> Changes.unsubscribe t.changes sub);
   let last = ref None in
@@ -237,7 +279,7 @@ let stream t ?(settle = 0.05) ?every ?(also = []) ?(keys = []) ?(show_error = de
     (* Not cancelled mid-query (the browser left): the driver would drop the
        connection and reconnect, which blocks the domain. The cancellation
        lands right after, at the next blocking point. *)
-    match Goo.protect (fun () -> render t ~show_error ~data req) with
+    match Goo.protect (fun () -> render t ~show_error ?tables ~data req) with
     | Ok (children, tables) ->
       Changes.watch t.changes sub ~since ~keys (also @ tables);
       let html = render_string children in
@@ -270,11 +312,13 @@ let root ~id req children =
     [ script; Html.div [ Html.Attributes.id (Css.Id.make id) ] children ]
 ;;
 
-let page t ?(id = "live") ?settle ?every ?also ?(keys = fun _ -> []) ?(show_error = default_show) ~shell ~data req =
+let page t ?(id = "live") ?settle ?every ?also ?(keys = fun _ -> []) ?tables ?(show_error = default_show) ~shell ~data
+    req =
   if Datastar_web.is_datastar_request req then
-    Datastar_web.sse (stream t ~id ?settle ?every ?also ~keys:(keys req) ~show_error ~data req)
+    Datastar_web.sse (stream t ~id ?settle ?every ?also ~keys:(keys req) ?tables ~show_error ~data req)
   else
-    match render t ~show_error ~data req with
+    (* Not cut mid-query if the client leaves (see [stream]). *)
+    match Goo.protect (fun () -> render t ~show_error ?tables ~data req) with
     | Ok (children, _) -> Web.Response.html (shell req (root ~id req children))
     | Error (`Unwatched m) ->
       Log.err (fun f -> f "%s" m);

@@ -40,11 +40,17 @@
     {b Pages.} A normal GET renders the page; its live part asks for the
     same URL again with Datastar, which stays open as a stream of
     server-sent events. Each render runs in a transaction that records the
-    tables it read ({!Reads}), and watches them; when one changes, it
+    tables it read ({!Reads}: BEGIN, the page's queries, a look at the
+    transaction's locks, COMMIT), and watches them; when one changes, it
     renders again and, if the HTML differs, sends it: Datastar morphs it
     into the page. The browser's request carries its cookies: every render
-    is the user's, and runs in a READ ONLY transaction (a render that
-    wrote would wake itself forever: it fails instead).
+    is the user's. A render that writes is rolled back and fails (it would
+    wake itself forever).
+
+    {b Hot pages} can list their tables ([~tables]): no transaction and no
+    tracking, only the page's own queries. Set [check_tables] (in
+    development) to keep tracking those pages and report tables they read
+    but don't list, which they'd never update for.
 
     {b Partitioned tables} are watched and read as their root: declare the
     parent, and write through it (a statement on a partition directly
@@ -73,12 +79,15 @@ val create :
   ?burst_window:float ->
   ?calm_window:float ->
   ?on_unwatched:[ `Fail | `Warn | `Ignore ] ->
+  ?check_tables:bool ->
   db:Caqti_goo.Domain_pool.t ->
   url:Uri.t ->
   table list ->
   t
 (** Defaults: 20 writes/s, a poll every second, 60 s and 600 s windows,
-    [`Warn] (logged once per page and tables). [url] is the database's,
+    [`Warn] (logged once per page and tables), [check_tables] false (see
+    {!page}'s [~tables]; [on_unwatched] says what to do when a page reads
+    tables it doesn't list). [url] is the database's,
     for the LISTEN connection: a direct connection or a session pooler,
     not a transaction pooler. *)
 
@@ -103,6 +112,7 @@ val page :
   ?every:float ->
   ?also:string list ->
   ?keys:(Web.Request.t -> Changes.key list) ->
+  ?tables:string list ->
   ?show_error:(([> Caqti_error.t ] as 'e) -> string) ->
   shell:(Web.Request.t -> [> `div ] Html.elt -> Html.document) ->
   data:(Web.Request.t -> Caqti_goo.connection -> ([< Html.flow ] Html.elt list, 'e) result) ->
@@ -116,7 +126,11 @@ val page :
     a timer (for time, other services...); [also] watches more tables;
     [keys] narrows tables to rows, e.g.
     [fun _ -> [ ("public.orders", "id", id) ]] (the table needs those keys
-    in {!table}, and they must cover everything the page reads from it). *)
+    in {!table}, and they must cover everything the page reads from it).
+    [tables]: the tables the page reads (["products"] is
+    ["public.products"]), instead of finding out on every render: saves 3
+    round trips per render, but a table missing from it is never watched
+    (see [check_tables]). *)
 
 val stream :
   t ->
@@ -124,6 +138,7 @@ val stream :
   ?every:float ->
   ?also:string list ->
   ?keys:Changes.key list ->
+  ?tables:string list ->
   ?show_error:(([> Caqti_error.t ] as 'e) -> string) ->
   id:string ->
   data:(Web.Request.t -> Caqti_goo.connection -> ([< Html.flow ] Html.elt list, 'e) result) ->
@@ -161,13 +176,17 @@ with type t = Changes.t
 val changes : t -> Changes.t
 
 module Reads : sig
+  exception Wrote of string list
+  (** The tables a tracked transaction wrote to (it was rolled back). *)
+
   val track :
     ?writes:bool ->
     Caqti_goo.connection ->
     (Caqti_goo.connection -> ('a, ([> Caqti_error.call_or_retrieve | Caqti_error.transact ] as 'e)) result) ->
     ('a * string list, 'e) result
-  (** [f conn]'s result and the tables it read (schema.table; partitions
-      as their root), from Postgres' per-transaction scan counters. [f] runs
-      in a transaction, READ ONLY unless [~writes:true], committed if it
-      returns [Ok]. *)
+  (** [f conn]'s result and the tables it used (schema.table; partitions
+      as their root), from the locks its transaction holds: a table named
+      but not reached counts too. [f] runs in a transaction, committed if it
+      returns [Ok]; unless [~writes:true], one that wrote is rolled back and
+      [Wrote] raised. *)
 end

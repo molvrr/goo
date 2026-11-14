@@ -128,9 +128,19 @@ let tests uri =
     or_fail (DP.use db (fun conn -> Live.Reads.track conn (fun (module C : Caqti_goo.CONNECTION) -> C.collect_list qp ())))
   in
   expect ("partitions read as their root: " ^ String.concat "," read) (read = [ "public.p" ]);
+  sql db "CREATE VIEW ab AS SELECT a.id FROM a JOIN b USING (id)";
+  let qv = Caqti_request.Infix.(Caqti_type.(unit ->* int) "SELECT id FROM ab") in
+  let _, read =
+    or_fail (DP.use db (fun conn -> Live.Reads.track conn (fun (module C : Caqti_goo.CONNECTION) -> C.collect_list qv ())))
+  in
+  expect ("a view reads its tables: " ^ String.concat "," read) (read = [ "public.a"; "public.b" ]);
   let w = Caqti_request.Infix.(Caqti_type.(unit ->. unit) "INSERT INTO a VALUES (99, 'w')") in
-  let r = DP.use db (fun conn -> Live.Reads.track conn (fun (module C : Caqti_goo.CONNECTION) -> C.exec w ())) in
-  expect "a write in a read-only render fails" (Result.is_error r);
+  let wrote =
+    match DP.use db (fun conn -> Live.Reads.track conn (fun (module C : Caqti_goo.CONNECTION) -> C.exec w ())) with
+    | exception Live.Reads.Wrote ts -> ts
+    | _ -> []
+  in
+  expect "a write in a tracked render raises Wrote" (wrote = [ "public.a" ]);
   let vs = Caqti_request.Infix.(Caqti_type.(unit ->* int) "SELECT id FROM a WHERE id = 99") in
   expect "...and isn't there" (or_fail (DP.use db (fun (module C : Caqti_goo.CONNECTION) -> C.collect_list vs ())) = []);
 
@@ -245,6 +255,35 @@ let tests uri =
   let r = Live.page live ~shell ~data:hidden (Web.Request.make "/hidden") in
   expect "reading an unwatched table: 500 with on_unwatched:`Fail"
     (Httpun.Status.to_code (Web.Response.status r) = 500);
+  let r = Live.page live ~tables:[ "a" ] ~shell ~data (Web.Request.make "/a") in
+  expect "~tables: GET renders without tracking" (contains (Web.Response.body_to_string r) "<p>x</p>");
+  let r = Live.page live ~tables:[ "a"; "hidden" ] ~shell ~data (Web.Request.make "/a") in
+  expect "~tables naming an unwatched table: 500 with on_unwatched:`Fail" (Httpun.Status.to_code (Web.Response.status r) = 500);
+  let checked = Live.create ~db ~url:uri ~on_unwatched:`Fail ~check_tables:true Live.[ table "a" ~mode:`Notify; table "hidden" ] in
+  let both _req (module C : Caqti_goo.CONNECTION) =
+    Result.bind (C.collect_list Caqti_request.Infix.(Caqti_type.(unit ->* int) "SELECT id FROM hidden") ()) (fun _ -> data _req (module C))
+  in
+  let r = Live.page checked ~tables:[ "a" ] ~shell ~data:both (Web.Request.make "/both") in
+  expect "check_tables: a page reading a table missing from ~tables fails" (Httpun.Status.to_code (Web.Response.status r) = 500);
+  let r = Live.page checked ~tables:[ "a"; "hidden" ] ~shell ~data:both (Web.Request.make "/both") in
+  expect "...and passes once listed" (Httpun.Status.to_code (Web.Response.status r) = 200);
+  let writes _req (module C : Caqti_goo.CONNECTION) =
+    Result.map (fun () -> []) (C.exec Caqti_request.Infix.(Caqti_type.(unit ->. unit) "INSERT INTO a VALUES (77, 'w')") ())
+  in
+  let r = Live.page live ~shell ~data:writes (Web.Request.make "/w") in
+  let rows = Caqti_request.Infix.(Caqti_type.(unit ->* int) "SELECT id FROM a WHERE id = 77") in
+  expect "a render that writes: 500, rolled back"
+    (Httpun.Status.to_code (Web.Response.status r) = 500 && or_fail (DP.use db (fun (module C : Caqti_goo.CONNECTION) -> C.collect_list rows ())) = []);
+  let events2 = Goo.Chan.create () in
+  let s2 =
+    Goo.scope
+      [ (fun () -> Live.stream live ~id:"live" ~tables:[ "a" ] ~data (Web.Request.make "/a") (fun e -> Goo.Chan.send events2 e)) ]
+  in
+  ignore (Goo.Chan.recv events2);
+  sql db "INSERT INTO a VALUES (3, 'via tables')";
+  expect "~tables: the stream updates after a write" (contains (String.concat "" (List.map snd (Goo.Chan.recv events2))) "via tables");
+  Goo.cancel s2;
+  Goo.join s2;
   let events = Goo.Chan.create () in
   let s =
     Goo.scope [ (fun () -> Live.stream live ~id:"live" ~data (Web.Request.make "/a") (fun e -> Goo.Chan.send events e)) ]
