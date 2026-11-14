@@ -134,6 +134,24 @@ let tests uri =
   let vs = Caqti_request.Infix.(Caqti_type.(unit ->* int) "SELECT id FROM a WHERE id = 99") in
   expect "...and isn't there" (or_fail (DP.use db (fun (module C : Caqti_goo.CONNECTION) -> C.collect_list vs ())) = []);
 
+  log "-- Changes with many subscribers on one table";
+  let ch = Live.Changes.create () in
+  let n = 10_000 in
+  let subs = List.init n (fun _ -> Live.Changes.subscribe ch) in
+  let t0 = Unix.gettimeofday () in
+  (* What a render does: watch again, after every change. *)
+  for _ = 1 to 3 do
+    List.iter (fun s -> Live.Changes.watch ch s ~since:(Live.Changes.now ch) [ "public.x"; "public.y" ]) subs
+  done;
+  let dt = Unix.gettimeofday () -. t0 in
+  log "%d subscribers x 3 re-watches: %.3fs" n dt;
+  expect "re-watching is cheap (not quadratic)" (dt < 1.);
+  expect "all watching" (Live.Changes.watching ch "public.x" = n);
+  List.iter (fun s -> Live.Changes.watch ch s ~since:(Live.Changes.now ch) [ "public.y" ]) subs;
+  expect "moved off a table" (Live.Changes.watching ch "public.x" = 0 && Live.Changes.watching ch "public.y" = n);
+  List.iter (Live.Changes.unsubscribe ch) subs;
+  expect "unsubscribing removes them all" (Live.Changes.subscribers ch = 0 && Live.Changes.watching ch "public.y" = 0);
+
   log "-- a column that doesn't exist";
   let bad = Live.create ~db ~url:uri Live.[ table "a" ~keys:[ "nope" ] ] in
   expect "start fails" (match Live.start bad with () -> false | exception Failure m -> contains m "no column nope");

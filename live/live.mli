@@ -149,6 +149,11 @@ module Changes : sig
   val poke : sub -> unit
   val changed : t -> ?keys:(string * string list) list -> string -> unit
   val lost : t -> unit
+
+  val watching : t -> string -> int
+  (** How many subscribers watch the table. *)
+
+  val subscribers : t -> int
 end
 with type t = Changes.t
  and type sub = Changes.sub
