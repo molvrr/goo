@@ -69,6 +69,14 @@ and sched = {
   readers : (Unix.file_descr, waiter Queue.t) Hashtbl.t;
   writers : (Unix.file_descr, waiter Queue.t) Hashtbl.t;
   subs : (Unix.file_descr, sub list) Hashtbl.t;
+  (* The kernel poller (None: select), what's registered with it (fd ->
+     mask, 1 = read, 2 = write), and the fds whose interest may have
+     changed since (true: register again even if the mask looks the same,
+     in case the fd was closed and reused behind our back). *)
+  poller : Goo_poller.t option;
+  registered : (Unix.file_descr, int) Hashtbl.t;
+  dirty : (Unix.file_descr, bool) Hashtbl.t;
+  events : int array;
   timers : (float * waiter) Dynarray.t;
   rbuf : bytes;
   mutable root : scope option;
@@ -298,6 +306,33 @@ let deliver sub event =
       sub.state <- `Error e;
       wake (fun k -> discontinue k e)
 
+(* {2 Kernel poller bookkeeping} *)
+
+let touch ?(force = false) sc fd =
+  if Option.is_some sc.poller then
+    match Hashtbl.find_opt sc.dirty fd with
+    | Some true -> ()
+    | _ -> Hashtbl.replace sc.dirty fd force
+
+(* What [fd] should be watched for now. *)
+let want sc fd =
+  let read =
+    fd = sc.wake_r || Hashtbl.mem sc.readers fd
+    || match Hashtbl.find_opt sc.subs fd with
+       | Some l -> List.exists (fun s -> s.state = `Open) l
+       | None -> false
+  in
+  (if read then 1 else 0) lor if Hashtbl.mem sc.writers fd then 2 else 0
+
+(* Stop watching [fd] before it's closed (its number may be reused). *)
+let forget sc fd =
+  Hashtbl.remove sc.dirty fd;
+  match (sc.poller, Hashtbl.find_opt sc.registered fd) with
+  | Some p, Some old ->
+      Hashtbl.remove sc.registered fd;
+      (try Goo_poller.modify p fd old 0 with Unix.Unix_error _ -> ())
+  | _ -> ()
+
 (* Fail everything blocked on [fd] with [Closed], then close it. *)
 let close_fd sc fd =
   let fail_all tbl =
@@ -312,6 +347,7 @@ let close_fd sc fd =
     (List.iter (fun s -> if s.state = `Open then deliver s (`Error Closed)))
     (Hashtbl.find_opt sc.subs fd);
   Hashtbl.remove sc.subs fd;
+  forget sc fd;
   Unix.close fd
 
 let finish t failure =
@@ -408,10 +444,14 @@ and exec t fn ~on_done =
             ~unregister:(remove_timer sc))
   | effect AwaitRead fd, k ->
       cancel_point k (fun () ->
-          suspend t k ~register:(park sc.readers fd) ~unregister:(unpark sc.readers fd))
+          suspend t k
+            ~register:(fun w -> park sc.readers fd w; touch ~force:true sc fd)
+            ~unregister:(fun w -> let r = unpark sc.readers fd w in touch sc fd; r))
   | effect AwaitWrite fd, k ->
       cancel_point k (fun () ->
-          suspend t k ~register:(park sc.writers fd) ~unregister:(unpark sc.writers fd))
+          suspend t k
+            ~register:(fun w -> park sc.writers fd w; touch ~force:true sc fd)
+            ~unregister:(fun w -> let r = unpark sc.writers fd w in touch sc fd; r))
   | effect Block f, k ->
       cancel_point k (fun () ->
           let w = { task = t; k; live = true } in
@@ -442,6 +482,7 @@ and exec t fn ~on_done =
       let sub = { sowner = sc; fd; inbox = Queue.create (); waiter = None; state = `Open } in
       let others = Option.value ~default:[] (Hashtbl.find_opt sc.subs fd) in
       Hashtbl.replace sc.subs fd (sub :: others);
+      touch ~force:true sc fd;
       continue k sub
   | effect Close fd, k ->
       close_fd sc fd;
@@ -489,8 +530,10 @@ let tick sc =
 (* Drop unsubscribed entries and fds nobody listens to anymore. *)
 let prune_subs sc =
   Hashtbl.filter_map_inplace
-    (fun _ l ->
-      match List.filter (fun s -> s.state = `Open) l with [] -> None | l -> Some l)
+    (fun fd l ->
+      match List.filter (fun s -> s.state = `Open) l with
+      | [] -> touch sc fd; None
+      | l' -> if List.compare_lengths l' l <> 0 then touch sc fd; Some l')
     sc.subs
 
 (* Read once from [fd] and fan the result out to all its subscribers. *)
@@ -505,7 +548,7 @@ let fan_out sc fd =
   match (event, Hashtbl.find_opt sc.subs fd) with
   | Some event, Some l ->
       List.iter (fun s -> deliver s event) l;
-      (match event with `Data _ -> () | `Eof | `Error _ -> Hashtbl.remove sc.subs fd)
+      (match event with `Data _ -> () | `Eof | `Error _ -> Hashtbl.remove sc.subs fd; touch sc fd)
   | None, _ | _, None -> ()
 
 (* Seconds until the next timer fires; -1.0 means block indefinitely. *)
@@ -517,9 +560,9 @@ let next_timeout sc =
     in
     if earliest = infinity then -1.0 else Float.max 0.0 (earliest -. Unix.gettimeofday ())
 
-(* Wait for I/O (without blocking when tasks are queued, see [next_timeout])
-   and wake the tasks it unblocks. *)
-let poll sc =
+(* Without a kernel poller: select over every watched fd (at most
+   FD_SETSIZE, 1024 on most systems). *)
+let poll_select sc =
   prune_subs sc;
   (* Select on all subscribed fds, even without a blocked waiter, so data is
      buffered for every subscriber as it arrives. *)
@@ -543,6 +586,53 @@ let poll sc =
         if Hashtbl.mem sc.subs fd then fan_out sc fd
       end)
     ready
+
+(* Wake every task waiting on [fd]: the kernel won't watch it (a regular
+   file, or an fd already closed), so they retry and see for themselves. *)
+let wake_all sc fd =
+  let all tbl =
+    Option.iter (Queue.iter resume) (Hashtbl.find_opt tbl fd);
+    Hashtbl.remove tbl fd
+  in
+  all sc.readers;
+  all sc.writers
+
+(* With the kernel poller: bring its interest up to date for the fds that
+   changed, wait, and wake what's ready. *)
+let poll_kernel sc p =
+  prune_subs sc;
+  let changed = Hashtbl.fold (fun fd force acc -> (fd, force) :: acc) sc.dirty [] in
+  Hashtbl.reset sc.dirty;
+  List.iter
+    (fun (fd, force) ->
+      let old = Option.value ~default:0 (Hashtbl.find_opt sc.registered fd) in
+      let w = want sc fd in
+      if force || w <> old then
+        match Goo_poller.modify p fd old w with
+        | () -> if w = 0 then Hashtbl.remove sc.registered fd else Hashtbl.replace sc.registered fd w
+        | exception Unix.Unix_error _ ->
+            Hashtbl.remove sc.registered fd;
+            wake_all sc fd)
+    changed;
+  Goo_poller.wait p ~timeout:(next_timeout sc) sc.events (fun fd mask ->
+      if mask land 2 <> 0 then begin
+        wake_one sc.writers fd;
+        touch sc fd
+      end;
+      if mask land 1 <> 0 then
+        if fd = sc.wake_r then drain_mailbox sc
+        else begin
+          wake_one sc.readers fd;
+          touch sc fd;
+          if Hashtbl.mem sc.subs fd then fan_out sc fd
+        end)
+
+(* Wait for I/O (without blocking when tasks are queued, see [next_timeout])
+   and wake the tasks it unblocks. *)
+let poll sc =
+  match sc.poller with
+  | Some p -> poll_kernel sc p
+  | None -> poll_select sc
 
 (* Runs until told to stop: an idle scheduler may still receive work from
    other domains, so it blocks on its wake pipe instead of returning.
@@ -981,6 +1071,15 @@ end
 
 (* {1 Running} *)
 
+(* epoll / kqueue where there's one, unless GOO_POLLER=select. *)
+let use_kernel_poller =
+  Goo_poller.kind <> `Select && Sys.getenv_opt "GOO_POLLER" <> Some "select"
+
+let io_backend () =
+  match (current ()).poller with
+  | Some _ -> (Goo_poller.kind :> [ `Epoll | `Kqueue | `Select ])
+  | None -> `Select
+
 let run_parallel ?domains main =
   if Option.is_some (current_opt ()) then invalid_arg "Goo.run: already running";
   let n =
@@ -1014,6 +1113,10 @@ let run_parallel ?domains main =
       readers = Hashtbl.create 5;
       writers = Hashtbl.create 5;
       subs = Hashtbl.create 5;
+      poller = (if use_kernel_poller then Some (Goo_poller.create ()) else None);
+      registered = Hashtbl.create 64;
+      dirty = Hashtbl.create 64;
+      events = Goo_poller.buffer ();
       timers = Dynarray.create ();
       rbuf = Bytes.create 65536;
       root = None;
@@ -1022,6 +1125,8 @@ let run_parallel ?domains main =
     }
   in
   cl.scheds <- Array.init n make;
+  (* The wake pipe is always watched. *)
+  Array.iter (fun sc -> touch ~force:true sc sc.wake_r) cl.scheds;
   Array.iter
     (fun sc ->
       let root = new_scope sc None in
@@ -1052,6 +1157,7 @@ let run_parallel ?domains main =
   Atomic.set cl.done_ true;
   Array.iter
     (fun sc ->
+      Option.iter Goo_poller.close sc.poller;
       Unix.close sc.wake_r;
       Unix.close sc.wake_w)
     cl.scheds;

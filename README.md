@@ -4,7 +4,7 @@ A dune workspace of OCaml libraries for web apps on Goo, with no Eio.
 
 | Package | Library | What |
 |---|---|---|
-| `goo` | `goo` | Cooperative, multi-domain scheduler built on effects: tasks, scopes and cancellation, sockets, channels, mutexes/conditions |
+| `goo` | `goo` | Cooperative, multi-domain scheduler built on effects: tasks, scopes and cancellation, sockets (epoll / kqueue, select as a fallback or with `GOO_POLLER=select`), channels, mutexes/conditions |
 | `goo-server` | `goo-server` | TCP servers accepting on several Goo domains (`Goo_server`), built on Goo's public API |
 | `html` | `html` | Typed HTML (`Html`) and CSS (`Css`) builders |
 | `csp` | `csp` | Typed Content-Security-Policy headers |

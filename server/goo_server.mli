@@ -21,7 +21,9 @@ val start :
   t
 (** Listen on the address and accept on every given domain (default: all),
     with [acceptors] accept loops per domain (default 1). Returns once every
-    domain is listening.
+    domain is listening. [backlog] (default 4096; the kernel caps it, at
+    net.core.somaxconn on Linux) is how many connections may wait to be
+    accepted: a burst of new connections beyond it is dropped.
 
     Each connection runs [handler fd peer] as its own task on the domain
     that accepted it; [fd] is non-blocking and is closed by the runtime

@@ -120,7 +120,7 @@ let shutdown ?timeout t =
 
 let wait t = Array.iter (fun n -> Goo.join n.unit_scope) t.nodes
 
-let start ?domains:doms ?(acceptors = 1) ?(backlog = 128) ?(strategy = `Auto) addr handler =
+let start ?domains:doms ?(acceptors = 1) ?(backlog = 4096) ?(strategy = `Auto) addr handler =
   let doms = match doms with Some d -> d | None -> Goo.domains () in
   if Array.length doms = 0 then invalid_arg "Goo_server.start: no domains";
   if acceptors < 1 then invalid_arg "Goo_server.start: acceptors must be >= 1";

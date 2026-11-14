@@ -43,6 +43,13 @@ val run_main : ?domains:int -> (unit -> 'a) -> 'a
       Goo.run_main (fun () -> Goo_server.wait (Web.App.serve addr app))
     ]} *)
 
+val io_backend : unit -> [ `Epoll | `Kqueue | `Select ]
+(** How the current scheduler waits for I/O: epoll (Linux) or kqueue (macOS,
+    BSDs), or select where neither exists or when [GOO_POLLER=select] is set
+    in the environment. select is limited to fds below FD_SETSIZE (1024 on
+    most systems), so a process with more open fds than that needs one of
+    the others. *)
+
 (** {1 Domains} *)
 
 type domain

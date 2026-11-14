@@ -2,4 +2,7 @@
  (name goo)
  (public_name goo)
  (wrapped false)
+ (foreign_stubs
+  (language c)
+  (names goo_poller_stubs))
  (libraries unix))

@@ -14,6 +14,12 @@
  (modules test_goo test_goo_parallel test_goo_server test_goo_sync test_httpun_goo test_web)
  (libraries goo goo-server web unix httpun gluten logs logs.fmt))
 
+; More fds than select allows; needs ulimit -n of about 7000 (skipped otherwise).
+(test
+ (name test_goo_fds)
+ (modules test_goo_fds)
+ (libraries goo unix))
+
 ; test_static's last part needs curl on the PATH (skipped otherwise).
 (test
  (name test_static)
