@@ -127,6 +127,38 @@ let tests uri =
   let size_d1 = R.await_on d1 (fun () -> Caqti_goo.Pool.size (DP.get db)) in
   log "pool sizes: d0 %d, d1 %d" size_d0 size_d1;
 
+  log "-- cancelling many tasks waiting for a connection doesn't break the pool";
+  let conns () =
+    or_fail (DP.use db (fun (module C : Caqti_goo.CONNECTION) ->
+      C.find Caqti_request.Infix.(Caqti_type.(unit ->! int) "SELECT count(*)::int FROM pg_stat_activity WHERE backend_type = 'client backend'") ()))
+  in
+  let before = conns () in
+  let small = DP.create ~pool_config:(pool_config 2) uri in
+  let finished = Atomic.make 0 in
+  let n = 200 in
+  let s =
+    R.scope
+      (List.init n (fun _ () ->
+           Fun.protect ~finally:(fun () -> Atomic.incr finished) (fun () ->
+               while true do
+                 ignore (DP.use small (fun (module C : Caqti_goo.CONNECTION) -> C.find sleep 0.01));
+                 R.check ()
+               done)))
+  in
+  R.sleep 0.3;
+  R.cancel s;
+  let t = Unix.gettimeofday () in
+  while Atomic.get finished < n && Unix.gettimeofday () -. t < 10. do R.sleep 0.05 done;
+  expect (Printf.sprintf "%d/%d cancelled tasks finished" (Atomic.get finished) n) (Atomic.get finished = n);
+  let after = conns () in
+  expect (Printf.sprintf "server connections %d -> %d (no connection left behind)" before after) (after <= before + 4);
+  if Atomic.get finished = n then begin
+    R.join s;
+    let ok = Result.is_ok (DP.use small (fun (module C : Caqti_goo.CONNECTION) -> C.find add (1, 1))) in
+    expect "the pool still serves" ok
+  end;
+  DP.close small;
+
   log "-- both domains query at once";
   let elapsed =
     time (fun () ->

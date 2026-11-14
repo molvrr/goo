@@ -234,7 +234,10 @@ let stream t ?(settle = 0.05) ?every ?(also = []) ?(keys = []) ?(show_error = de
   let last = ref None in
   let rec loop ~retry_in =
     let since = Changes.now t.changes in
-    match render t ~show_error ~data req with
+    (* Not cancelled mid-query (the browser left): the driver would drop the
+       connection and reconnect, which blocks the domain. The cancellation
+       lands right after, at the next blocking point. *)
+    match Goo.protect (fun () -> render t ~show_error ~data req) with
     | Ok (children, tables) ->
       Changes.watch t.changes sub ~since ~keys (also @ tables);
       let html = render_string children in

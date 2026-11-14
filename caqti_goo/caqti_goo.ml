@@ -114,8 +114,29 @@ module System_core = struct
      for it forever). *)
   let async ~sw:_ f = f ()
 
-  module Mutex = Goo.Mutex
-  module Condition = Goo.Condition
+  (* Not cancellable. Caqti's pool isn't written for cancellation at these
+     points: a task cancelled in [Condition.wait] (waiting for a free
+     connection) gets the pool's mutex back and raises, and [acquire] never
+     unlocks it, so every later use of the pool hangs; its entry also stays
+     in the wait queue and swallows the next wake-up. The sections under the
+     pool's mutex are short, and the cancellation is delivered at the task's
+     next blocking point (e.g. its first query), after which the connection
+     goes back to the pool the normal way. *)
+  module Mutex = struct
+    type t = Goo.Mutex.t
+
+    let create = Goo.Mutex.create
+    let lock m = Goo.protect (fun () -> Goo.Mutex.lock m)
+    let unlock = Goo.Mutex.unlock
+  end
+
+  module Condition = struct
+    type t = Goo.Condition.t
+
+    let create = Goo.Condition.create
+    let wait c m = Goo.protect (fun () -> Goo.Condition.wait c m)
+    let signal = Goo.Condition.signal
+  end
 
   module Log = struct
     type 'a log = 'a Logs.log
@@ -255,7 +276,19 @@ module System_unix = struct
   end
 end
 
-module Pool = Caqti_platform.Pool.Make (System) (Alarm)
+(* Connections are opened and closed without cancellation: a task cancelled
+   while its connection was being opened (e.g. it had been waiting for a
+   slot) would leave the new connection open on the server, uncounted by
+   the pool; enough of them run the server out of connections. *)
+module Pool = struct
+  module P = Caqti_platform.Pool.Make (System) (Alarm)
+  include P
+
+  let create ?config ?check ?validate ?log_src ~sw ~stdenv connect disconnect =
+    P.create ?config ?check ?validate ?log_src ~sw ~stdenv
+      (fun () -> Goo.protect connect)
+      (fun c -> Goo.protect (fun () -> disconnect c))
+end
 module Loader = Caqti_platform_unix.Driver_loader.Make (System) (System_unix)
 module Connector = Connector.Make (System) (Pool) (Loader)
 
@@ -346,7 +379,12 @@ module Domain_pool = struct
                     p
                 | Error err -> raise (Caqti_error.Exn err)))
 
-  let use ?priority t f = Pool.use ?priority f (get t)
+  (* A task cancelled while it waited for a connection (it gets one: the
+     wait isn't cancellable, see System_core.Mutex) gives it back before
+     starting a query. Cancelled mid-query, the driver would drop the
+     connection and reconnect (a blocking connect), and many at once leave
+     old backends lingering on the server past max_connections. *)
+  let use ?priority t f = Pool.use ?priority (fun c -> Goo.check (); f c) (get t)
 
   let close t =
     let slots =
